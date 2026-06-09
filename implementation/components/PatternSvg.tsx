@@ -4,6 +4,9 @@ interface Props {
   geometry: GeometryResult;
   showAuxLines: boolean;
   showPoints: boolean;
+  /** Optional map from a (possibly prefixed) point key to the label to draw.
+   *  Used when several parts are merged so labels stay as bare point names. */
+  pointLabels?: Record<string, string>;
 }
 
 /** Compute label offset and text-anchor from the point's position hint. */
@@ -19,7 +22,7 @@ function labelProps(
   }
 }
 
-export function PatternSvg({ geometry, showAuxLines, showPoints }: Props) {
+export function PatternSvg({ geometry, showAuxLines, showPoints, pointLabels }: Props) {
   const { bbox, paths, lineTypes, points } = geometry;
 
   if (!bbox) {
@@ -74,7 +77,7 @@ export function PatternSvg({ geometry, showAuxLines, showPoints }: Props) {
               fontFamily="monospace"
               textAnchor={anchor}
             >
-              {name}
+              {pointLabels?.[name] ?? name}
             </text>
           </g>
         );

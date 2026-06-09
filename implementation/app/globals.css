@@ -117,6 +117,96 @@ body {
   height: 100%;
 }
 
+/* ── Loaded parts list ───────────────────────────────── */
+
+.loaded-parts {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.loaded-part {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0f1115;
+  overflow: hidden;
+}
+
+.loaded-part.active {
+  border-color: var(--accent);
+  background: rgba(110, 168, 254, 0.1);
+}
+
+.loaded-part-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.loaded-part.active .loaded-part-name {
+  color: var(--accent);
+}
+
+.loaded-part-dirty {
+  color: var(--accent);
+}
+
+.loaded-part-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: 13px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.loaded-part-remove:hover {
+  color: var(--error);
+  background: rgba(255, 107, 107, 0.1);
+}
+
+.loaded-part-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.btn-add-part {
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.btn-add-part:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .json-editor {
   flex: 1;
   width: 100%;
@@ -197,6 +287,20 @@ h2:first-child {
 .field label {
   font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
   font-size: 14px;
+}
+
+.shared-var-badge {
+  margin-left: 6px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: rgba(110, 168, 254, 0.12);
+  border-radius: 6px;
+  padding: 1px 6px;
+  vertical-align: middle;
 }
 
 .field input {

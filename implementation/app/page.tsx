@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { collectVariables, evaluatePart } from "@/lib/geometry";
+import { collectVariables, evaluatePart, mergeGeometries, type GeometryResult } from "@/lib/geometry";
 import { samplePart } from "@/lib/samplePart";
 import {
   MEASUREMENT_SETS,
@@ -19,7 +19,28 @@ import { loadState, saveState, type StoredState } from "@/lib/storage";
 import type { Measurements, PartDef } from "@/lib/types";
 import { PatternSvg } from "@/components/PatternSvg";
 import { SaveModal } from "@/components/SaveModal";
+import { AddPartModal } from "@/components/AddPartModal";
 import InspectorPanel from "@/components/InspectorPanel";
+
+/** One pattern part loaded into the editor and onto the plot. */
+interface LoadedPart {
+  file: string;
+  text: string;
+  savedText: string;
+}
+
+/** Validate that a part's JSON uses the current object format for points
+ *  (not the old tuple format ["expr","expr"]), which would crash geometry.ts. */
+function isUsablePartText(text: string | undefined): boolean {
+  if (!text) return false;
+  try {
+    const p = JSON.parse(text);
+    const first = Object.values(p.points ?? {})[0];
+    return first == null || (!Array.isArray(first) && typeof first === "object");
+  } catch {
+    return false;
+  }
+}
 
 type Tab = "measurements" | "edit-part" | "display";
 type VariableSets = Record<string, string>;
@@ -35,8 +56,10 @@ export default function Home() {
   // All state starts with sensible defaults (safe for SSR).
   // The mount effect below immediately overwrites them from localStorage.
   const [activeTab, setActiveTab] = useState<Tab>("measurements");
-  const [partText, setPartText] = useState("");
-  const [selectedPartFile, setSelectedPartFile] = useState(DEFAULT_PART_FILE);
+  // The parts currently loaded onto the plot. The editor shows one at a time
+  // (activePartFile); every loaded part is rendered on the shared plot.
+  const [loadedParts, setLoadedParts] = useState<LoadedPart[]>([]);
+  const [activePartFile, setActivePartFile] = useState("");
   const [selectedSet, setSelectedSet] = useState(DEFAULT_SET);
   const [measurements, setMeasurements] = useState<Measurements>(MEASUREMENT_SETS[DEFAULT_SET]);
   const [variableSets, setVariableSets] = useState<VariableSets>(defaultVariableSets);
@@ -63,8 +86,7 @@ export default function Home() {
   // Ephemeral UI state — not persisted
   const [partFiles, setPartFiles] = useState<string[]>([]);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
-  // Tracks the content that was last loaded from or saved to disk
-  const [savedPartText, setSavedPartText] = useState("");
+  const [addModalOpen, setAddModalOpen] = useState(false);
 
   // ── Persistence: write a snapshot of all current state plus any overrides ──
 
@@ -74,9 +96,8 @@ export default function Home() {
     // (since setState is asynchronous and the closure still holds old values).
     saveState({
       activeTab,
-      partText,
-      lastSavedPartText: savedPartText,
-      selectedPartFile,
+      loadedParts,
+      activePartFile,
       selectedSet,
       measurements,
       variableSets,
@@ -107,56 +128,53 @@ export default function Home() {
     if (stored.showAuxLines !== undefined) setShowAuxLines(stored.showAuxLines);
     if (stored.showPoints   !== undefined) setShowPoints(stored.showPoints);
 
-    const partFile = stored.selectedPartFile ?? DEFAULT_PART_FILE;
-    setSelectedPartFile(partFile);
-
-    // Validate that the stored partText uses the current object format for points
-    // (not the old tuple format ["expr","expr"]). Old data would crash geometry.ts.
-    const storedPartIsUsable = (() => {
-      if (!stored.partText) return false;
-      try {
-        const p = JSON.parse(stored.partText);
-        const first = Object.values(p.points ?? {})[0];
-        return first == null || (!Array.isArray(first) && typeof first === "object");
-      } catch {
-        return false;
-      }
-    })();
-
-    if (storedPartIsUsable) {
-      setPartText(stored.partText!);
-      setSavedPartText(stored.lastSavedPartText ?? stored.partText!);
-    } else {
-      // First visit, stale format, or invalid JSON — load fresh from disk
-      fetch(`/api/parts/${partFile}`)
-        .then((r) => r.text())
-        .then((text) => {
-          const pretty = JSON.stringify(JSON.parse(text), null, 2);
-          setPartText(pretty);
-          setSavedPartText(pretty);
-          saveState({ ...stored, partText: pretty, lastSavedPartText: pretty, selectedPartFile: partFile });
-        })
-        .catch(() => {
-          const fallback = JSON.stringify(samplePart, null, 2);
-          setPartText(fallback);
-          setSavedPartText(fallback);
-        });
+    // ── Restore the loaded parts ────────────────────────────────────────────
+    // Prefer the new multi-part storage; otherwise migrate the old single-part
+    // fields; otherwise load the default part fresh from disk.
+    const usableStored = (stored.loadedParts ?? []).filter((p) => isUsablePartText(p.text));
+    if (usableStored.length > 0) {
+      setLoadedParts(usableStored);
+      const active = usableStored.some((p) => p.file === stored.activePartFile)
+        ? stored.activePartFile!
+        : usableStored[0].file;
+      setActivePartFile(active);
+      return;
     }
+
+    if (isUsablePartText(stored.partText)) {
+      // Migrate legacy single-part storage into one loaded part.
+      const file = stored.selectedPartFile || DEFAULT_PART_FILE;
+      const part: LoadedPart = {
+        file,
+        text: stored.partText!,
+        savedText: stored.lastSavedPartText ?? stored.partText!,
+      };
+      setLoadedParts([part]);
+      setActivePartFile(file);
+      saveState({ ...stored, loadedParts: [part], activePartFile: file });
+      return;
+    }
+
+    // First visit, stale format, or invalid JSON — load the default part fresh.
+    fetch(`/api/parts/${DEFAULT_PART_FILE}`)
+      .then((r) => r.text())
+      .then((text) => {
+        const pretty = JSON.stringify(JSON.parse(text), null, 2);
+        const part: LoadedPart = { file: DEFAULT_PART_FILE, text: pretty, savedText: pretty };
+        setLoadedParts([part]);
+        setActivePartFile(DEFAULT_PART_FILE);
+        saveState({ ...stored, loadedParts: [part], activePartFile: DEFAULT_PART_FILE });
+      })
+      .catch(() => {
+        const fallback = JSON.stringify(samplePart, null, 2);
+        const part: LoadedPart = { file: DEFAULT_PART_FILE, text: fallback, savedText: fallback };
+        setLoadedParts([part]);
+        setActivePartFile(DEFAULT_PART_FILE);
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentionally runs once on mount only
 
   // ── Geometry pipeline (derived, not persisted) ────────────────────────────
-
-  const parsed = useMemo<{ part: PartDef | null; error: string | null }>(() => {
-    try {
-      return { part: JSON.parse(partText) as PartDef, error: null };
-    } catch (err) {
-      return { part: null, error: (err as Error).message };
-    }
-  }, [partText]);
-
-  const part = parsed.part;
-  const variables = useMemo(() => (part ? collectVariables(part) : []), [part]);
 
   // Body-form selections resolve to numeric values bound to their variable names.
   const bodyformValues = useMemo(
@@ -170,33 +188,66 @@ export default function Home() {
     [measurements, bodyformValues]
   );
 
-  // Scope passed to the geometry engine. We provide ALL known values (every
-  // measurement + every body-form value + this part's user-definable variables)
-  // rather than only the formula-detected subset, so that local_variables and
-  // point formulas can reference any of them — even names that collide with
+  // Evaluate every loaded part independently. Each part gets its own scope:
+  // shared measurements + body-form values, plus that part's user-definable
+  // variables (which take precedence on name clashes). We provide ALL known
+  // values rather than only the formula-detected subset so that local_variables
+  // and point formulas can reference any of them — even names that collide with
   // expr-eval built-ins (e.g. `length`), which the detector can't always see.
-  // Part-specific variables take precedence over measurements on name clashes.
   // Any remaining detected-but-unknown name still defaults to 0 so partial edits
   // keep rendering.
-  const scope = useMemo(() => {
-    const s: Measurements = {
-      ...variableValues,
-      ...(part?.part_specific_user_definable_variables ?? {}),
-    };
-    for (const v of variables) if (!(v in s)) s[v] = 0;
-    return s;
-  }, [variables, variableValues, part]);
+  const partGeometries = useMemo(() => {
+    return loadedParts.map((lp) => {
+      let part: PartDef | null = null;
+      let parseError: string | null = null;
+      try {
+        part = JSON.parse(lp.text) as PartDef;
+      } catch (err) {
+        parseError = (err as Error).message;
+      }
+      let geometry: GeometryResult | null = null;
+      if (part) {
+        const s: Measurements = {
+          ...variableValues,
+          ...(part.part_specific_user_definable_variables ?? {}),
+        };
+        for (const v of collectVariables(part)) if (!(v in s)) s[v] = 0;
+        geometry = evaluatePart(part, s);
+      }
+      return { file: lp.file, part, parseError, geometry };
+    });
+  }, [loadedParts, variableValues]);
 
-  const geometry = useMemo(
-    () => (part ? evaluatePart(part, scope) : null),
-    [part, scope]
+  // Merge all parts' geometry into one result drawn on a shared plot.
+  const merged = useMemo(
+    () => mergeGeometries(partGeometries.map((p) => ({ id: p.file, geometry: p.geometry }))),
+    [partGeometries]
   );
 
-  const formulaErrors = geometry ? Object.entries(geometry.errors) : [];
+  // The part currently shown in the editor.
+  const activeEntry = partGeometries.find((p) => p.file === activePartFile) ?? null;
+  const activeLoaded = loadedParts.find((p) => p.file === activePartFile) ?? null;
+  const activePart = activeEntry?.part ?? null;
+  const activeParseError = activeEntry?.parseError ?? null;
+  const activeText = activeLoaded?.text ?? "";
 
-  // Save button is enabled only when the editor content differs from the last
-  // file load or save (i.e., there are unsaved changes).
-  const isDirty = partText !== savedPartText;
+  // How many loaded parts define each user-definable variable name. Used to flag
+  // variables that are shared across parts (an edit applies to all of them).
+  const varPartCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const pg of partGeometries) {
+      for (const k of Object.keys(pg.part?.part_specific_user_definable_variables ?? {})) {
+        counts[k] = (counts[k] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [partGeometries]);
+
+  const formulaErrors = Object.entries(merged.errors);
+
+  // Save button is enabled only when the active part's editor content differs
+  // from the last file load or save (i.e., there are unsaved changes).
+  const isDirty = activeLoaded != null && activeLoaded.text !== activeLoaded.savedText;
 
   // ── Event handlers (each calls persist() with the new values) ─────────────
 
@@ -205,43 +256,79 @@ export default function Home() {
     persist({ activeTab: tab });
   }
 
+  // Replace the active part's editor text (re-renders the plot immediately).
+  function setActivePartText(text: string) {
+    if (!activePartFile) return;
+    const next = loadedParts.map((p) =>
+      p.file === activePartFile ? { ...p, text } : p
+    );
+    setLoadedParts(next);
+    persist({ loadedParts: next });
+  }
+
   function handlePartTextChange(text: string) {
-    setPartText(text);
-    persist({ partText: text });
+    setActivePartText(text);
   }
 
   // Edit a part_specific_user_definable_variable: write the new value straight
-  // back into the JSON so the editor and the geometry stay in sync.
+  // back into the JSON so the editor and the geometry stay in sync. When the
+  // same variable name is defined by several loaded parts, the change is applied
+  // to ALL of them at once so shared customizations stay consistent.
   function handlePartVariableChange(name: string, value: number) {
-    if (!part) return;
-    const updated: PartDef = {
-      ...part,
-      part_specific_user_definable_variables: {
-        ...part.part_specific_user_definable_variables,
-        [name]: value,
-      },
-    };
-    const text = JSON.stringify(updated, null, 2);
-    setPartText(text);
-    persist({ partText: text });
+    const next = loadedParts.map((lp) => {
+      let parsed: PartDef;
+      try {
+        parsed = JSON.parse(lp.text) as PartDef;
+      } catch {
+        return lp; // leave parts with invalid JSON untouched
+      }
+      const vars = parsed.part_specific_user_definable_variables;
+      if (!vars || !(name in vars)) return lp; // only parts that define it
+      const updated: PartDef = {
+        ...parsed,
+        part_specific_user_definable_variables: { ...vars, [name]: value },
+      };
+      return { ...lp, text: JSON.stringify(updated, null, 2) };
+    });
+    setLoadedParts(next);
+    persist({ loadedParts: next });
   }
 
-  async function handlePartFileChange(filename: string) {
-    setSelectedPartFile(filename);
-    persist({ selectedPartFile: filename });
+  // Make a loaded part the one shown in the editor.
+  function handleSelectPart(filename: string) {
+    setActivePartFile(filename);
+    persist({ activePartFile: filename });
+  }
+
+  // Load a part file from disk and add it to the plot (also selects it).
+  async function handleAddPart(filename: string) {
+    setAddModalOpen(false);
     if (!filename) return;
+    if (loadedParts.some((p) => p.file === filename)) {
+      handleSelectPart(filename);
+      return;
+    }
+    let text: string;
     try {
       const res = await fetch(`/api/parts/${filename}`);
-      const text = await res.text();
-      const pretty = JSON.stringify(JSON.parse(text), null, 2);
-      setPartText(pretty);
-      setSavedPartText(pretty);
-      persist({ selectedPartFile: filename, partText: pretty, lastSavedPartText: pretty });
+      const raw = await res.text();
+      text = JSON.stringify(JSON.parse(raw), null, 2);
     } catch (err) {
-      const msg = `// Failed to load ${filename}: ${(err as Error).message}`;
-      setPartText(msg);
-      persist({ selectedPartFile: filename, partText: msg });
+      text = `// Failed to load ${filename}: ${(err as Error).message}`;
     }
+    const next = [...loadedParts, { file: filename, text, savedText: text }];
+    setLoadedParts(next);
+    setActivePartFile(filename);
+    persist({ loadedParts: next, activePartFile: filename });
+  }
+
+  // Remove a part from the plot (and from the rendering logic).
+  function handleRemovePart(filename: string) {
+    const next = loadedParts.filter((p) => p.file !== filename);
+    const active = activePartFile === filename ? next[0]?.file ?? "" : activePartFile;
+    setLoadedParts(next);
+    setActivePartFile(active);
+    persist({ loadedParts: next, activePartFile: active });
   }
 
   function handleSetChange(setName: string) {
@@ -335,10 +422,12 @@ export default function Home() {
   }
 
   async function handleSave(filename: string) {
+    if (!activeLoaded) return;
+    const text = activeLoaded.text;
     const res = await fetch(`/api/parts/${filename}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: partText,
+      body: text,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -347,10 +436,18 @@ export default function Home() {
     setPartFiles((prev) =>
       prev.includes(filename) ? prev : [...prev, filename].sort()
     );
-    setSelectedPartFile(filename);
-    setSavedPartText(partText);
+    // Update the active part: a "save as new file" renames it, and either way
+    // its content is now the saved baseline. Drop any other entry that would
+    // collide with the new file name so the list keeps one entry per file.
+    const next = loadedParts
+      .map((p) =>
+        p.file === activePartFile ? { file: filename, text, savedText: text } : p
+      )
+      .filter((p, i, arr) => arr.findIndex((q) => q.file === p.file) === i);
+    setLoadedParts(next);
+    setActivePartFile(filename);
     setSaveModalOpen(false);
-    persist({ selectedPartFile: filename, lastSavedPartText: partText });
+    persist({ loadedParts: next, activePartFile: filename });
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -368,9 +465,9 @@ export default function Home() {
         <button
           className={`tab-btn${activeTab === "edit-part" ? " active" : ""}`}
           onClick={() => handleTabChange("edit-part")}
-          title="Edit Part Definition"
+          title="Edit Pattern"
         >
-          <span>Edit Part Definition</span>
+          <span>Edit Pattern</span>
         </button>
         <button
           className={`tab-btn${activeTab === "display" ? " active" : ""}`}
@@ -472,66 +569,127 @@ export default function Home() {
 
         {activeTab === "edit-part" && (
           <div className="edit-part-wrap">
-            <h2>Load part file</h2>
-            <select
-              className="set-select"
-              value={selectedPartFile}
-              onChange={(e) => handlePartFileChange(e.target.value)}
+            <h2>Loaded parts</h2>
+            <ul className="loaded-parts">
+              {loadedParts.length === 0 && (
+                <li className="loaded-part-empty">No parts loaded.</li>
+              )}
+              {loadedParts.map((p) => {
+                const dirty = p.text !== p.savedText;
+                return (
+                  <li
+                    key={p.file}
+                    className={`loaded-part${p.file === activePartFile ? " active" : ""}`}
+                  >
+                    <button
+                      className="loaded-part-name"
+                      onClick={() => handleSelectPart(p.file)}
+                      title="Edit this part"
+                    >
+                      {p.file}
+                      {dirty && <span className="loaded-part-dirty" title="Unsaved changes"> ●</span>}
+                    </button>
+                    <button
+                      className="loaded-part-remove"
+                      onClick={() => handleRemovePart(p.file)}
+                      title={`Remove ${p.file} from the plot`}
+                      aria-label={`Remove ${p.file}`}
+                    >
+                      ✕
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <button
+              className="btn-add-part"
+              onClick={() => setAddModalOpen(true)}
+              title="Add a part to the plot"
             >
-              <option value="">— select a file —</option>
-              {partFiles.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
+              + Add part
+            </button>
 
-            {part && Object.keys(part.part_specific_user_definable_variables ?? {}).length > 0 && (
-              <div className="customize-section">
-                <h2>Customize</h2>
-                {Object.entries(part.part_specific_user_definable_variables!).map(([name, value]) => (
-                  <div className="field" key={name}>
-                    <label htmlFor={`psv-${name}`}>{name}</label>
-                    <input
-                      id={`psv-${name}`}
-                      type="number"
-                      value={value}
-                      onChange={(e) => handlePartVariableChange(name, Number(e.target.value))}
-                    />
+            {activePartFile === "" ? (
+              <p className="subtitle" style={{ marginTop: 16 }}>
+                Add a part to start editing.
+              </p>
+            ) : (
+              <>
+                {activePart &&
+                  Object.keys(activePart.part_specific_user_definable_variables ?? {}).length > 0 && (
+                    <div className="customize-section">
+                      <h2>Customize</h2>
+                      {Object.entries(activePart.part_specific_user_definable_variables!).map(
+                        ([name, value]) => (
+                          <div className="field" key={name}>
+                            <label htmlFor={`psv-${name}`}>
+                              {name}
+                              {varPartCounts[name] > 1 && (
+                                <span
+                                  className="shared-var-badge"
+                                  title={`Shared by ${varPartCounts[name]} loaded parts — editing updates all of them`}
+                                >
+                                  shared ×{varPartCounts[name]}
+                                </span>
+                              )}
+                            </label>
+                            <input
+                              id={`psv-${name}`}
+                              type="number"
+                              value={value}
+                              onChange={(e) =>
+                                handlePartVariableChange(name, Number(e.target.value))
+                              }
+                            />
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+
+                <h2>Part Definition (JSON) — {activePartFile}</h2>
+                <textarea
+                  className={`json-editor${activeParseError ? " invalid" : ""}`}
+                  value={activeText}
+                  spellCheck={false}
+                  onChange={(e) => handlePartTextChange(e.target.value)}
+                />
+                {activeParseError && (
+                  <div className="errors">
+                    Invalid JSON: <code>{activeParseError}</code>
                   </div>
-                ))}
-              </div>
-            )}
+                )}
 
-            <h2>Part Definition (JSON)</h2>
-            <textarea
-              className={`json-editor${parsed.error ? " invalid" : ""}`}
-              value={partText}
-              spellCheck={false}
-              onChange={(e) => handlePartTextChange(e.target.value)}
-            />
-            {parsed.error && (
-              <div className="errors">
-                Invalid JSON: <code>{parsed.error}</code>
-              </div>
+                <div className="edit-part-actions">
+                  <button
+                    className="btn-primary"
+                    onClick={() => setSaveModalOpen(true)}
+                    disabled={!isDirty}
+                    title={isDirty ? "Save changes" : "No unsaved changes"}
+                  >
+                    Save
+                  </button>
+                </div>
+              </>
             )}
-
-            <div className="edit-part-actions">
-              <button
-                className="btn-primary"
-                onClick={() => setSaveModalOpen(true)}
-                disabled={!isDirty}
-                title={isDirty ? "Save changes" : "No unsaved changes"}
-              >
-                Save
-              </button>
-            </div>
           </div>
         )}
 
         {saveModalOpen && (
           <SaveModal
-            currentFile={selectedPartFile}
+            currentFile={activePartFile}
             onSave={handleSave}
             onClose={() => setSaveModalOpen(false)}
+          />
+        )}
+
+        {addModalOpen && (
+          <AddPartModal
+            availableFiles={partFiles.filter(
+              (f) => !loadedParts.some((p) => p.file === f)
+            )}
+            onAdd={handleAddPart}
+            onClose={() => setAddModalOpen(false)}
           />
         )}
 
@@ -566,19 +724,20 @@ export default function Home() {
 
       <section className="panel plot-panel">
         <div className="canvas-wrap">
-          {geometry ? (
+          {loadedParts.length === 0 ? (
+            <div className="subtitle">Add a part to see the pattern.</div>
+          ) : merged.bbox ? (
             <PatternSvg
-              geometry={geometry}
+              geometry={merged}
+              pointLabels={merged.pointLabels}
               showAuxLines={showAuxLines}
               showPoints={showPoints}
             />
           ) : (
-            <div className="subtitle">
-              {partText ? "Fix the part JSON to see the pattern." : "Loading…"}
-            </div>
+            <div className="subtitle">Fix the part JSON to see the pattern.</div>
           )}
         </div>
-        {geometry && <InspectorPanel geometry={geometry} />}
+        {loadedParts.length > 0 && <InspectorPanel geometry={merged} />}
       </section>
     </main>
   );

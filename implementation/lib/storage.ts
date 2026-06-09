@@ -7,12 +7,28 @@ import type { Measurements } from "./types";
 type Tab = "measurements" | "edit-part" | "display";
 type VariableSets = Record<string, string>;
 
+/** One pattern part loaded into the editor / plot. */
+export interface StoredLoadedPart {
+  /** Source file name (without .json) — also used as the part's id. */
+  file: string;
+  /** Current editor content. */
+  text: string;
+  /** Content at the last explicit file load or save — used to detect unsaved edits. */
+  savedText: string;
+}
+
 export interface StoredState {
   activeTab?: Tab;
+  /** All parts currently loaded onto the plot. */
+  loadedParts?: StoredLoadedPart[];
+  /** File name of the part currently shown in the editor. */
+  activePartFile?: string;
+
+  // ── Deprecated single-part fields (read only, for migrating old storage) ──
   partText?: string;
-  /** Content at the last explicit file load or save — used to detect unsaved edits. */
   lastSavedPartText?: string;
   selectedPartFile?: string;
+
   selectedSet?: string;
   measurements?: Measurements;
   variableSets?: VariableSets;

@@ -661,3 +661,59 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
 
   return { points, paths, lineTypes, localValues: localScope, bbox, errors };
 }
+
+// ── Multi-part merge ──────────────────────────────────────────────────────────
+// Several pattern parts share one coordinate space and are drawn on the same
+// plot. We merge their individually-evaluated geometries into one result so a
+// single <PatternSvg> can render them with a common viewBox.
+//
+// Different parts may legitimately reuse the same point/line names (e.g. two
+// parts each have a point "1"). To keep them distinct we prefix every key with
+// the part id when more than one part is present — but only then, so a single
+// loaded part behaves exactly as before. `pointLabels` maps each (possibly
+// prefixed) point key back to its bare name for display.
+
+export interface MergedGeometry extends GeometryResult {
+  pointLabels: Record<string, string>;
+}
+
+export function mergeGeometries(
+  items: { id: string; geometry: GeometryResult | null }[]
+): MergedGeometry {
+  const points: Record<string, ResolvedPoint> = {};
+  const paths: Record<string, string> = {};
+  const lineTypes: Record<string, string | undefined> = {};
+  const localValues: Record<string, number> = {};
+  const errors: Record<string, string> = {};
+  const pointLabels: Record<string, string> = {};
+  let bbox: GeometryResult["bbox"] = null;
+
+  const present = items.filter((it) => it.geometry);
+  const multi = present.length > 1;
+
+  for (const { id, geometry } of present) {
+    const g = geometry!;
+    const kPfx = multi ? `${id}::` : "";
+    const ePfx = multi ? `${id}.` : "";
+    for (const [k, v] of Object.entries(g.points)) {
+      points[kPfx + k] = v;
+      pointLabels[kPfx + k] = k;
+    }
+    for (const [k, v] of Object.entries(g.paths)) paths[kPfx + k] = v;
+    for (const [k, v] of Object.entries(g.lineTypes)) lineTypes[kPfx + k] = v;
+    for (const [k, v] of Object.entries(g.localValues)) localValues[ePfx + k] = v;
+    for (const [k, v] of Object.entries(g.errors)) errors[ePfx + k] = v;
+    if (g.bbox) {
+      bbox = bbox
+        ? {
+            minX: Math.min(bbox.minX, g.bbox.minX),
+            minY: Math.min(bbox.minY, g.bbox.minY),
+            maxX: Math.max(bbox.maxX, g.bbox.maxX),
+            maxY: Math.max(bbox.maxY, g.bbox.maxY),
+          }
+        : g.bbox;
+    }
+  }
+
+  return { points, paths, lineTypes, localValues, bbox, errors, pointLabels };
+}

@@ -1,0 +1,25 @@
+;;
+dropdown_variable;dropdown_text;dropdown_value
+waistform;none of the others;1
+waistform;a bit flat buttocks, PLUS a bit stronger hips;0.5
+waistform;flat buttocks, PLUS strong hips;0
+waistform;a bit stronger buttocks, PLUS a bit flater hips;1.5
+waistform;strong buttocks, PLUS flat hips;2
+cupsize;C;0.8
+cupsize;A;0
+cupsize;B;0.4
+cupsize;D;1.2
+cupsize;E;1.6
+cupsize;F;2
+cupsize;G;2.4
+cupsize;H;2.8
+torsolength;regular;1
+torsolength;a bit shorter torso ;0.5
+torsolength;exceptionally short torso ;0
+torsolength;a bit longer torso ;1.5
+torsolength;exceptionally long torso ;2
+hipbones;regular: can feel hipbones through skin, but not strongly visible;1
+hipbones;fat: what are hipbones?;0
+hipbones;chubby: can hardly feel hipbones ;0.5
+hipbones;rather skinny: hipbones rather visible;1.5
+hipbones;anorexic: hipbones clearly protruding optically;2

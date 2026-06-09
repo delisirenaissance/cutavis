@@ -1,0 +1,17 @@
+import type { PartDef } from "./types";
+
+export const samplePart: PartDef = {
+  points: {
+    A: { x: "margin",             y: "margin",              pointType: "aux", position: "top-left"     },
+    B: { x: "margin + width",     y: "margin",              pointType: "aux", position: "top-right"    },
+    C: { x: "margin + width",     y: "margin + length",     pointType: "aux", position: "bottom-right" },
+    D: { x: "margin",             y: "margin + length",     pointType: "aux", position: "bottom-left"  },
+    E: { x: "margin + width / 2", y: "margin + length + curve", pointType: "aux", position: "bottom-right" },
+  },
+  lines: {
+    top:   { lineType: "seam", linePointReferences: ["A", "A", "B", "B"] },
+    right: { lineType: "seam", linePointReferences: ["B", "B", "C", "C"] },
+    hem:   { lineType: "hem",  linePointReferences: ["C", "E", "E", "D"] },
+    left:  { lineType: "seam", linePointReferences: ["D", "D", "A", "A"] },
+  },
+};

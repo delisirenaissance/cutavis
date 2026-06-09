@@ -1,0 +1,500 @@
+{
+  "part_specific_user_definable_variables": {
+    "skirtLength": 46
+  },
+  "local_variables": {
+    "WZgTaU": "2",
+    "WZgHueU": "3",
+    "TaAf": "(1/2) * (TaU + WZgTaU) - (1/2) * (HueU + WZgHueU)",
+    "sHueAbst": "TaAf/2  + (-1.5 + 3 * (waistform/2))",
+    "vAbn": "1.5 + hipbones * (1.5/2)",
+    "hAbn": "TaAf - sHueAbst - vAbn"
+  },
+  "points": {
+    "1": {
+      "x": "0",
+      "y": "0",
+      "pointType": "aux"
+    },
+    "2": {
+      "x": "0",
+      "y": "skirtLength",
+      "pointType": "aux"
+    },
+    "3": {
+      "x": "0",
+      "y": "HueT",
+      "pointType": "aux"
+    },
+    "4": {
+      "x": "1/2 * (HueU + WZgHueU)",
+      "y": "0",
+      "pointType": "aux"
+    },
+    "5": {
+      "x": "point(4->x)",
+      "y": "point(2->y)",
+      "pointType": "aux"
+    },
+    "6": {
+      "x": "point(4->x)",
+      "y": "point(3->y)",
+      "pointType": "aux"
+    },
+    "7": {
+      "x": "point(1->x) + (point(4->x)-point(1->x))/2",
+      "y": "point(1->y)",
+      "pointType": "aux"
+    },
+    "8": {
+      "x": "point(7->x)",
+      "y": "point(2->y)",
+      "pointType": "aux"
+    },
+    "9": {
+      "x&y": "f:intersectLines(L5,L6)",
+      "pointType": "aux"
+    },
+    "10": {
+      "x": "point(7->x)",
+      "y": "point(7->y) - (1.5 - 0.5 * (waistform/2))",
+      "pointType": "aux"
+    },
+    "11": {
+      "x": "point(7->x) - (TaU/10)",
+      "y": "point(7->y) + (point(10->y) - point(7->y))/2",
+      "pointType": "aux"
+    },
+    "12": {
+      "x": "point(7->x) + (point(4->x) - point(7->x))/2",
+      "y": "point(7->y) + (point(10->y) - point(7->y))/2",
+      "pointType": "aux"
+    },
+    "17": {
+      "x": "point(16a->x) - (TaU/10)",
+      "y": "point(7->y) + (point(10->y) - point(7->y))/2",
+      "pointType": "aux"
+    },
+    "18": {
+      "x": "point(16b->x) + (point(4->x) - point(16b->x))/2",
+      "y": "point(12->y)",
+      "pointType": "aux"
+    },
+    "20": {
+      "x&y": "f:intersectLines(L6, L10)",
+      "pointType": "aux"
+    },
+    "21": {
+      "x": "point(9->x)",
+      "y": "point(9->y) + (point(19a->y)-point(9->y))*(2/3)",
+      "pointType": "aux"
+    },
+    "22": {
+      "x": "point(16b->x) + (point(18a->x)-point(16b->x))/2",
+      "y": "point(18->y) + (point(16b->y)-point(18->y))/3",
+      "pointType": "aux"
+    },
+    "23": {
+      "x": "point(18b->x) + (point(18a->x) - point(22->x)) *(1/2)",
+      "y": "point(18b->y) + (point(18a->y)-point(22->y))* (1/2)",
+      "pointType": "aux"
+    },
+    "24": {
+      "x": "point(4->x) - (point(23->x) - point(18b->x))",
+      "y": "point(4->y)",
+      "pointType": "aux"
+    },
+    "25": {
+      "x": "point(1->x) + (point(17b->x) - point(1->x))*(1/2)",
+      "y": "point(4->y)",
+      "pointType": "aux"
+    },
+    "26": {
+      "x": "point(4->x) - TaU/10",
+      "y": "point(4->y) + (1/3)*(point(18->y)-point(4->y))",
+      "pointType": "aux"
+    },
+    "27": {
+      "x": "point(16b->x) + (1/2)*(point(26a->x) - point(16b->x))",
+      "y": "point(18->y)",
+      "pointType": "aux"
+    },
+    "28": {
+      "x": "point(27b->x) + (2/3)*(point(26a->x) - point(27b->x))",
+      "y": "point(26a->y)",
+      "pointType": "aux"
+    },
+    "29": {
+      "x": "point(16b->x) + (point(16a->x) - point(16c->x))",
+      "y": "point(16c->y)",
+      "pointType": "aux"
+    },
+    "16a": {
+      "x": "point(10->x) + (1/2) * sHueAbst",
+      "y": "point(10->y)",
+      "pointType": "aux"
+    },
+    "16b": {
+      "x": "point(10->x) - (1/2) * sHueAbst",
+      "y": "point(10->y)",
+      "pointType": "aux"
+    },
+    "16c": {
+      "x": "point(17a->x) + (1/2) * (point(16a->x) - point(17b->x))",
+      "y": "point(17a->y) + (1/2) * (point(16a->y) - point(17b->y))",
+      "pointType": "aux"
+    },
+    "17a": {
+      "x": "point(17->x) + (1/2) * vAbn",
+      "y": "point(17->y)",
+      "pointType": "aux"
+    },
+    "17b": {
+      "x": "point(17->x) - (1/2) * vAbn",
+      "y": "point(17->y)",
+      "pointType": "aux"
+    },
+    "17c": {
+      "x": "point(17->x)",
+      "y": "point(17->y) + 9",
+      "pointType": "aux"
+    },
+    "18a": {
+      "x": "point(18->x) + (1/2) * hAbn",
+      "y": "point(18->y)",
+      "pointType": "aux"
+    },
+    "18b": {
+      "x": "point(18->x) - (1/2) * hAbn",
+      "y": "point(18->y)",
+      "pointType": "aux"
+    },
+    "18c": {
+      "x": "point(18->x)",
+      "y": "point(18->y) + 14",
+      "pointType": "aux"
+    },
+    "19a": {
+      "x&y": "f:lotPointOnLineAtDistance(L9, 0, -5)",
+      "pointType": "aux"
+    },
+    "19b": {
+      "x": "point(16b->x) - (point(19a->x)-point(16a->x))",
+      "y": "point(19a->y)",
+      "pointType": "aux"
+    },
+    "26a": {
+      "x": "point(26->x) + (1/2)*hAbn*(3/5)",
+      "y": "point(26->y)",
+      "pointType": "aux"
+    },
+    "26b": {
+      "x": "point(26->x) - (1/2)*hAbn*(3/5)",
+      "y": "point(26->y)",
+      "pointType": "aux"
+    },
+    "26c": {
+      "x": "point(26->x)",
+      "y": "point(18c->y)",
+      "pointType": "aux"
+    },
+    "27a": {
+      "x": "point(27->x) + (2/5)*hAbn*(1/2)",
+      "y": "point(18->y)",
+      "pointType": "aux"
+    },
+    "27b": {
+      "x": "point(27->x) - (2/5)*hAbn*(1/2)",
+      "y": "point(18->y)",
+      "pointType": "aux"
+    },
+    "27c": {
+      "x": "point(27->x)",
+      "y": "point(27->y) + 12.5",
+      "pointType": "aux"
+    }
+  },
+  "lines": {
+    "L1": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "1",
+        "1",
+        "2",
+        "2"
+      ]
+    },
+    "L2": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "1",
+        "1",
+        "4",
+        "4"
+      ]
+    },
+    "L3": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "4",
+        "4",
+        "5",
+        "5"
+      ]
+    },
+    "L4": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "2",
+        "2",
+        "5",
+        "5"
+      ]
+    },
+    "L5": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "3",
+        "3",
+        "6",
+        "6"
+      ]
+    },
+    "L6": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "7",
+        "7",
+        "8",
+        "8"
+      ]
+    },
+    "L7": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "17a",
+        "17a",
+        "17c",
+        "17c"
+      ]
+    },
+    "L8": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "17b",
+        "17b",
+        "17c",
+        "17c"
+      ]
+    },
+    "L9": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "16a",
+        "16c",
+        "16c",
+        "17a"
+      ]
+    },
+    "L10": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "16a",
+        "16a",
+        "19a",
+        "19a"
+      ]
+    },
+    "L11": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "16a",
+        "19a",
+        "21",
+        "9"
+      ]
+    },
+    "L12": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "16b",
+        "19b",
+        "21",
+        "9"
+      ]
+    },
+    "L13": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) < 4.5",
+      "linePointReferences": [
+        "16b",
+        "22",
+        "22",
+        "18a"
+      ]
+    },
+    "L14": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) < 4.5",
+      "linePointReferences": [
+        "18a",
+        "18a",
+        "18c",
+        "18c"
+      ]
+    },
+    "L15": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) < 4.5",
+      "linePointReferences": [
+        "18c",
+        "18c",
+        "18b",
+        "18b"
+      ]
+    },
+    "L16": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) < 4.5",
+      "linePointReferences": [
+        "18b",
+        "23",
+        "24",
+        "4"
+      ]
+    },
+    "L17": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "4",
+        "4",
+        "5",
+        "5"
+      ]
+    },
+    "L18": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "5",
+        "5",
+        "8",
+        "8"
+      ]
+    },
+    "L19": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "8",
+        "8",
+        "9",
+        "9"
+      ]
+    },
+    "L20": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "8",
+        "8",
+        "9",
+        "9"
+      ]
+    },
+    "L21": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "8",
+        "8",
+        "2",
+        "2"
+      ]
+    },
+    "L22": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "2",
+        "2",
+        "1",
+        "1"
+      ]
+    },
+    "L23": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "1",
+        "25",
+        "25",
+        "17b"
+      ]
+    },
+    "L24": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) >= 4.5",
+      "linePointReferences": [
+        "26b",
+        "26b",
+        "26c",
+        "26c"
+      ]
+    },
+    "L25": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) >= 4.5",
+      "linePointReferences": [
+        "26a",
+        "26a",
+        "26c",
+        "26c"
+      ]
+    },
+    "L26": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) >= 4.5",
+      "linePointReferences": [
+        "26b",
+        "24",
+        "24",
+        "4"
+      ]
+    },
+    "L27": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) >= 4.5",
+      "linePointReferences": [
+        "27a",
+        "27a",
+        "27c",
+        "27c"
+      ]
+    },
+    "L28": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) >= 4.5",
+      "linePointReferences": [
+        "27b",
+        "27b",
+        "27c",
+        "27c"
+      ]
+    },
+    "L29": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) >= 4.5",
+      "linePointReferences": [
+        "27b",
+        "28",
+        "28",
+        "26a"
+      ]
+    },
+    "L30": {
+      "lineType": "seam",
+      "condition": "abs(hAbn) >= 4.5",
+      "linePointReferences": [
+        "16b",
+        "29",
+        "29",
+        "27a"
+      ]
+    }
+  }
+}

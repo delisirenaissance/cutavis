@@ -1,0 +1,25 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.6.1 Chrome/142.0.7444.265 Electron/39.8.0 Safari/537.36" version="29.6.1">
+  <diagram name="Seite-1" id="rb7eZrk-TT9Mqme0VCWp">
+    <mxGraphModel dx="827" dy="543" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="P95wCHV-jGPc_0YQ2Z7Y-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Web Platform (Frontend)&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;shop&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;user accounts&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;measurement sets management&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;cutting table editor&amp;nbsp;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;SVG renderer&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="210" width="220" x="140" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="P95wCHV-jGPc_0YQ2Z7Y-3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Backend-API&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;authentication&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;database&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;parts formulas&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;parts compositions&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;rendering data&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="210" width="220" x="530" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="P95wCHV-jGPc_0YQ2Z7Y-4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Geometry Engine&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;evaluating formulas&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="100" width="220" x="530" y="580" as="geometry" />
+        </mxCell>
+        <mxCell id="P95wCHV-jGPc_0YQ2Z7Y-5" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;SVG Engine&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;building svg paths&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry height="100" width="220" x="530" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="P95wCHV-jGPc_0YQ2Z7Y-6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;" value="&lt;b&gt;Authentication&lt;/b&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;Auth.js/NextAuth or&lt;/div&gt;&lt;div&gt;Clerk or&lt;/div&gt;&lt;div&gt;Supabase Auth&lt;/div&gt;" vertex="1">
+          <mxGeometry height="90" width="160" x="330" y="690" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

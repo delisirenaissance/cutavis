@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(git --version)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"TYPECHECK_DONE_EXIT_$?\")",
+      "Bash(npm ls *)",
+      "Bash(echo \"TSC_EXIT=$?\")",
+      "Bash(curl -s -m 5 http://localhost:3000/)",
+      "Bash(node -e ' *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\Elisabeth\\\\Google Drive\\\\Projekte\\\\cutavis\\\\implementation\" -Force | Select-Object Name, @{Name=\"Type\";Expression={if \\($_.PSIsContainer\\) {\"Directory\"} else {\"File\"}}} | Sort-Object Type, Name)",
+      "Bash(npx --no-install tsc lib/geometry.ts lib/types.ts --outDir /tmp/geobuild --module esnext --target es2020 --moduleResolution node --skipLibCheck)",
+      "Bash(cp node_modules/expr-eval/dist/index.mjs /tmp/geobuild/)",
+      "Read(//tmp/geobuild/**)",
+      "Bash(cat)",
+      "Bash(node -e \"const fs=require\\('fs'\\);let s=fs.readFileSync\\('/tmp/geobuild/geometry.js','utf8'\\);s=s.replace\\('from \\\\\"expr-eval\\\\\"','from \\\\\"./index.mjs\\\\\"'\\);fs.writeFileSync\\('/tmp/geobuild/geometry.js',s\\);\")",
+      "Bash(node /tmp/geobuild/run.mjs \"patternpartdefinitions/skirt.json\")",
+      "Bash(rm -rf .geotest)",
+      "Bash(mkdir -p .geotest)",
+      "Bash(npx --no-install tsc lib/geometry.ts --outDir .geotest --module esnext --target es2020 --moduleResolution node --skipLibCheck)",
+      "Bash(echo '{\"type\":\"module\"}')",
+      "Bash(node .geotest/run.mjs \"patternpartdefinitions/skirt.json\")",
+      "Bash(rm -rf .geotest/geometry.js)",
+      "Bash(node -e \"const fs=require\\('fs'\\);let s=fs.readFileSync\\('.geotest/geometry.js','utf8'\\);s=s.replace\\('from \\\\\"expr-eval\\\\\"','from \\\\\"../node_modules/expr-eval/dist/index.mjs\\\\\"'\\);fs.writeFileSync\\('.geotest/geometry.js',s\\);\")",
+      "Bash(grep -q \"Ready\" .geotest_dev.log)",
+      "Bash(break)",
+      "Bash(curl -s http://localhost:3000/api/variables)",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('measurementVariableNames:',j.measurementVariableNames.length,'vars'\\);console.log\\('sets:',Object.keys\\(j.measurementSets\\)\\);console.log\\('bodyform vars:',Object.keys\\(j.bodyformVariables\\)\\);console.log\\('boneyhips opts:',j.bodyformVariables.boneyhips?.map\\(o=>o.text+'='+o.value\\)\\);}\\)\")",
+      "Bash(curl -s -o /dev/null -w \"page status: %{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3001/api/variables)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3000/)",
+      "PowerShell(Remove-Item *)",
+      "Bash(Get-ChildItem -Recurse -Name)"
+    ]
+  }
+}

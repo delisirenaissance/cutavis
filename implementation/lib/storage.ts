@@ -3,8 +3,9 @@
 // between effects that read and effects that write on the same render.
 
 import type { Measurements } from "./types";
+import type { PatternEdit } from "./edits";
 
-type Tab = "measurements" | "edit-part" | "display";
+type Tab = "measurements" | "edit-part" | "display" | "pattern";
 type VariableSets = Record<string, string>;
 
 /** One pattern part loaded into the editor / plot. */
@@ -23,6 +24,10 @@ export interface StoredState {
   loadedParts?: StoredLoadedPart[];
   /** File name of the part currently shown in the editor. */
   activePartFile?: string;
+  /** Ordered edit history applied to the loaded parts (moves, future splits). */
+  edits?: PatternEdit[];
+  /** Name of the pattern file the loaded combination was last loaded/saved as. */
+  currentPatternName?: string;
 
   // ── Deprecated single-part fields (read only, for migrating old storage) ──
   partText?: string;

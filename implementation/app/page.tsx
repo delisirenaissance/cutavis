@@ -17,6 +17,11 @@ import {
 import type { VariableTables } from "@/lib/variableCsv";
 import { loadState, saveState, type StoredState } from "@/lib/storage";
 import type { Measurements, PartDef } from "@/lib/types";
+import {
+  applyEditsToGeometry,
+  patternSignature,
+  type PatternEdit,
+} from "@/lib/edits";
 import { PatternSvg } from "@/components/PatternSvg";
 import { SaveModal } from "@/components/SaveModal";
 import { AddPartModal } from "@/components/AddPartModal";
@@ -42,7 +47,7 @@ function isUsablePartText(text: string | undefined): boolean {
   }
 }
 
-type Tab = "measurements" | "edit-part" | "display";
+type Tab = "measurements" | "edit-part" | "display" | "pattern";
 type VariableSets = Record<string, string>;
 
 const DEFAULT_SET = MEASUREMENT_SET_NAMES[0];
@@ -60,6 +65,10 @@ export default function Home() {
   // (activePartFile); every loaded part is rendered on the shared plot.
   const [loadedParts, setLoadedParts] = useState<LoadedPart[]>([]);
   const [activePartFile, setActivePartFile] = useState("");
+  // Ordered edit history (moves, future splits) applied to the loaded parts.
+  const [edits, setEdits] = useState<PatternEdit[]>([]);
+  // The pattern file this combination was last loaded/saved as (for overwrite).
+  const [currentPatternName, setCurrentPatternName] = useState("");
   const [selectedSet, setSelectedSet] = useState(DEFAULT_SET);
   const [measurements, setMeasurements] = useState<Measurements>(MEASUREMENT_SETS[DEFAULT_SET]);
   const [variableSets, setVariableSets] = useState<VariableSets>(defaultVariableSets);
@@ -85,8 +94,16 @@ export default function Home() {
 
   // Ephemeral UI state — not persisted
   const [partFiles, setPartFiles] = useState<string[]>([]);
+  const [patternFiles, setPatternFiles] = useState<string[]>([]);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [addModalOpen, setAddModalOpen] = useState(false);
+  const [savePatternModalOpen, setSavePatternModalOpen] = useState(false);
+  // The part currently selected on the plot (highlighted, movable). Independent
+  // of activePartFile so clearing the plot selection never empties the editor.
+  const [selectedPlotPart, setSelectedPlotPart] = useState<string | null>(null);
+  // Signature of the pattern as last loaded/saved — used to detect changes.
+  const [savedPatternSig, setSavedPatternSig] = useState<string | null>(null);
+  const [patternStatus, setPatternStatus] = useState<{ ok: boolean; msg: string } | null>(null);
 
   // ── Persistence: write a snapshot of all current state plus any overrides ──
 
@@ -98,6 +115,8 @@ export default function Home() {
       activeTab,
       loadedParts,
       activePartFile,
+      edits,
+      currentPatternName,
       selectedSet,
       measurements,
       variableSets,
@@ -117,10 +136,20 @@ export default function Home() {
       .then((files: string[]) => setPartFiles(files))
       .catch(() => {});
 
+    // Fetch available pattern files
+    fetch("/api/patterns")
+      .then((r) => r.json())
+      .then((files: string[]) => setPatternFiles(files))
+      .catch(() => {});
+
     // Restore persisted state
     const stored = loadState();
 
     if (stored.activeTab)                  setActiveTab(stored.activeTab);
+    if (stored.edits)                      setEdits(stored.edits);
+    if (stored.currentPatternName) {
+      setCurrentPatternName(stored.currentPatternName);
+    }
     if (stored.selectedSet)                setSelectedSet(stored.selectedSet);
     if (stored.measurements)               setMeasurements(stored.measurements);
     if (stored.variableSets)               setVariableSets(stored.variableSets);
@@ -212,11 +241,15 @@ export default function Home() {
           ...(part.part_specific_user_definable_variables ?? {}),
         };
         for (const v of collectVariables(part)) if (!(v in s)) s[v] = 0;
-        geometry = evaluatePart(part, s);
+        // Evaluate the base geometry, then replay this part's edit history on
+        // top of it (so moves/splits survive measurement changes).
+        const base = evaluatePart(part, s);
+        const partEdits = edits.filter((e) => e.part === lp.file);
+        geometry = partEdits.length ? applyEditsToGeometry(base, partEdits) : base;
       }
       return { file: lp.file, part, parseError, geometry };
     });
-  }, [loadedParts, variableValues]);
+  }, [loadedParts, variableValues, edits]);
 
   // Merge all parts' geometry into one result drawn on a shared plot.
   const merged = useMemo(
@@ -248,6 +281,19 @@ export default function Home() {
   // Save button is enabled only when the active part's editor content differs
   // from the last file load or save (i.e., there are unsaved changes).
   const isDirty = activeLoaded != null && activeLoaded.text !== activeLoaded.savedText;
+
+  // Per-part geometries (edits already applied) for the plot's selectable groups.
+  const plotParts = useMemo(
+    () =>
+      partGeometries
+        .filter((p) => p.geometry)
+        .map((p) => ({ id: p.file, geometry: p.geometry! })),
+    [partGeometries]
+  );
+
+  // The current pattern (loaded parts + edits) differs from the last save?
+  const currentPatternSig = patternSignature(loadedParts.map((p) => p.file), edits);
+  const patternDirty = savedPatternSig != null && currentPatternSig !== savedPatternSig;
 
   // ── Event handlers (each calls persist() with the new values) ─────────────
 
@@ -322,13 +368,45 @@ export default function Home() {
     persist({ loadedParts: next, activePartFile: filename });
   }
 
-  // Remove a part from the plot (and from the rendering logic).
+  // Remove a part from the plot (and from the rendering logic). Its edit history
+  // is dropped too, since edits reference the part by file id.
   function handleRemovePart(filename: string) {
     const next = loadedParts.filter((p) => p.file !== filename);
     const active = activePartFile === filename ? next[0]?.file ?? "" : activePartFile;
+    const nextEdits = edits.filter((e) => e.part !== filename);
     setLoadedParts(next);
     setActivePartFile(active);
-    persist({ loadedParts: next, activePartFile: active });
+    setEdits(nextEdits);
+    if (selectedPlotPart === filename) setSelectedPlotPart(null);
+    persist({ loadedParts: next, activePartFile: active, edits: nextEdits });
+  }
+
+  // ── Plot interaction: select / move / undo ────────────────────────────────
+
+  // Select a part on the plot. Also make it the editor's active part so the two
+  // views stay in sync; clearing the plot selection leaves the editor untouched.
+  function handlePlotSelect(id: string | null) {
+    setSelectedPlotPart(id);
+    if (id) {
+      setActivePartFile(id);
+      persist({ activePartFile: id });
+    }
+  }
+
+  // Commit a drag as one undoable translate edit.
+  function handleMovePart(id: string, dx: number, dy: number) {
+    if (dx === 0 && dy === 0) return;
+    const nextEdits: PatternEdit[] = [...edits, { type: "translate", part: id, dx, dy }];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+  }
+
+  // Undo the most recent edit in the history.
+  function handleUndo() {
+    if (edits.length === 0) return;
+    const nextEdits = edits.slice(0, -1);
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
   }
 
   function handleSetChange(setName: string) {
@@ -450,6 +528,73 @@ export default function Home() {
     persist({ loadedParts: next, activePartFile: filename });
   }
 
+  // ── Pattern load / save ───────────────────────────────────────────────────
+
+  // Load a saved pattern: fetch each referenced part fresh from disk and replay
+  // the stored edit history. Replaces whatever is currently loaded.
+  async function handleLoadPattern(name: string) {
+    if (!name) return;
+    let pattern: { parts?: string[]; edits?: PatternEdit[] };
+    try {
+      const res = await fetch(`/api/patterns/${name}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      pattern = await res.json();
+    } catch (err) {
+      setPatternStatus({ ok: false, msg: `Failed to load pattern "${name}": ${(err as Error).message}` });
+      return;
+    }
+    setPatternStatus(null);
+
+    const files = pattern.parts ?? [];
+    const parts: LoadedPart[] = await Promise.all(
+      files.map(async (file) => {
+        try {
+          const res = await fetch(`/api/parts/${file}`, { cache: "no-store" });
+          const raw = await res.text();
+          const pretty = JSON.stringify(JSON.parse(raw), null, 2);
+          return { file, text: pretty, savedText: pretty };
+        } catch (err) {
+          const msg = `// Failed to load ${file}: ${(err as Error).message}`;
+          return { file, text: msg, savedText: msg };
+        }
+      })
+    );
+    const patternEdits = pattern.edits ?? [];
+
+    setLoadedParts(parts);
+    setActivePartFile(parts[0]?.file ?? "");
+    setEdits(patternEdits);
+    setCurrentPatternName(name);
+    setSelectedPlotPart(null);
+    setSavedPatternSig(patternSignature(files, patternEdits));
+    persist({
+      loadedParts: parts,
+      activePartFile: parts[0]?.file ?? "",
+      edits: patternEdits,
+      currentPatternName: name,
+    });
+  }
+
+  // Save the current combination (loaded parts + edit history) as a pattern file.
+  async function handleSavePattern(name: string) {
+    const files = loadedParts.map((p) => p.file);
+    const body = { version: 1, parts: files, edits };
+    const res = await fetch(`/api/patterns/${name}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error((data as { error?: string }).error ?? "Save failed");
+    }
+    setPatternFiles((prev) => (prev.includes(name) ? prev : [...prev, name].sort()));
+    setCurrentPatternName(name);
+    setSavedPatternSig(patternSignature(files, edits));
+    setSavePatternModalOpen(false);
+    persist({ currentPatternName: name });
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -475,6 +620,13 @@ export default function Home() {
           title="Display"
         >
           <span>Display</span>
+        </button>
+        <button
+          className={`tab-btn${activeTab === "pattern" ? " active" : ""}`}
+          onClick={() => handleTabChange("pattern")}
+          title="Pattern"
+        >
+          <span>Pattern</span>
         </button>
       </nav>
 
@@ -720,22 +872,106 @@ export default function Home() {
             </label>
           </div>
         )}
+
+        {activeTab === "pattern" && (
+          <div className="pattern-tab">
+            <h1>Pattern</h1>
+            <p className="subtitle">
+              A pattern is a set of parts loaded together plus the edits applied to them.
+            </p>
+
+            <h2>Load pattern</h2>
+            <select
+              className="set-select"
+              value={currentPatternName}
+              onChange={(e) => handleLoadPattern(e.target.value)}
+            >
+              <option value="">— select a pattern —</option>
+              {patternFiles.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+
+            <h2>This pattern</h2>
+            {loadedParts.length === 0 ? (
+              <p className="subtitle">No parts loaded yet. Add parts in the Edit Pattern tab.</p>
+            ) : (
+              <ul className="pattern-part-list">
+                {loadedParts.map((p) => (
+                  <li key={p.file}>{p.file}</li>
+                ))}
+              </ul>
+            )}
+            <p className="checkbox-note">
+              {edits.length} edit{edits.length === 1 ? "" : "s"} in history
+              {currentPatternName && (
+                <>
+                  {" · "}
+                  {patternDirty ? "unsaved changes" : `saved as “${currentPatternName}”`}
+                </>
+              )}
+            </p>
+
+            <div className="edit-part-actions">
+              <button
+                className="btn-primary"
+                onClick={() => setSavePatternModalOpen(true)}
+                disabled={loadedParts.length === 0}
+                title={loadedParts.length === 0 ? "Load parts first" : "Save this pattern"}
+              >
+                Save pattern
+              </button>
+            </div>
+
+            {patternStatus && !patternStatus.ok && (
+              <p className="reload-err">{patternStatus.msg}</p>
+            )}
+          </div>
+        )}
+
+        {savePatternModalOpen && (
+          <SaveModal
+            title="Save pattern"
+            currentFile={currentPatternName}
+            onSave={handleSavePattern}
+            onClose={() => setSavePatternModalOpen(false)}
+          />
+        )}
       </section>
 
       <section className="panel plot-panel">
-        <div className="canvas-wrap">
-          {loadedParts.length === 0 ? (
-            <div className="subtitle">Add a part to see the pattern.</div>
-          ) : merged.bbox ? (
-            <PatternSvg
-              geometry={merged}
-              pointLabels={merged.pointLabels}
-              showAuxLines={showAuxLines}
-              showPoints={showPoints}
-            />
-          ) : (
-            <div className="subtitle">Fix the part JSON to see the pattern.</div>
-          )}
+        <div className="plot-main">
+          <div className="plot-toolbar">
+            <span className="plot-toolbar-info">
+              {selectedPlotPart
+                ? `Selected: ${selectedPlotPart} — drag on the plot to move it`
+                : "Click a part on the plot to select it"}
+            </span>
+            <button
+              className="btn-secondary"
+              onClick={handleUndo}
+              disabled={edits.length === 0}
+              title={edits.length === 0 ? "Nothing to undo" : "Undo last edit"}
+            >
+              ↶ Undo
+            </button>
+          </div>
+          <div className="canvas-wrap">
+            {loadedParts.length === 0 ? (
+              <div className="subtitle">Add a part to see the pattern.</div>
+            ) : plotParts.length > 0 ? (
+              <PatternSvg
+                parts={plotParts}
+                showAuxLines={showAuxLines}
+                showPoints={showPoints}
+                selectedPart={selectedPlotPart}
+                onSelectPart={handlePlotSelect}
+                onMovePart={handleMovePart}
+              />
+            ) : (
+              <div className="subtitle">Fix the part JSON to see the pattern.</div>
+            )}
+          </div>
         </div>
         {loadedParts.length > 0 && <InspectorPanel geometry={merged} />}
       </section>

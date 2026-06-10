@@ -604,9 +604,56 @@ svg {
   padding: 16px;
 }
 
-.plot-panel .canvas-wrap {
+.plot-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plot-main .canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.plot-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.plot-toolbar-info {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Pattern tab ─────────────────────────────────────── */
+
+.pattern-tab {
+  display: flex;
+  flex-direction: column;
+}
+
+.pattern-part-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pattern-part-list li {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0f1115;
 }
 
 .inspector {

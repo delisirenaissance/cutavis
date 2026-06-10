@@ -6,9 +6,11 @@ interface Props {
   currentFile: string; // empty string → no file loaded yet
   onSave: (filename: string) => Promise<void>;
   onClose: () => void;
+  /** Modal heading; defaults to the part-definition wording. */
+  title?: string;
 }
 
-export function SaveModal({ currentFile, onSave, onClose }: Props) {
+export function SaveModal({ currentFile, onSave, onClose, title = "Save part definition" }: Props) {
   const [mode, setMode] = useState<"overwrite" | "new">(
     currentFile ? "overwrite" : "new"
   );
@@ -54,7 +56,7 @@ export function SaveModal({ currentFile, onSave, onClose }: Props) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="modal-title">Save part definition</h3>
+        <h3 className="modal-title">{title}</h3>
 
         <div className="modal-options">
           {currentFile && (

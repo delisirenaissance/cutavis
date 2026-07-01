@@ -648,12 +648,76 @@ svg {
 }
 
 .pattern-part-list li {
-  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
-  font-size: 13px;
-  padding: 6px 10px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #0f1115;
+  overflow: hidden;
+}
+
+.pattern-part-name {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.pattern-part-name:hover {
+  background: rgba(110, 168, 254, 0.08);
+}
+
+.pattern-part-name.highlighted {
+  color: #6ea8fe;
+  background: rgba(110, 168, 254, 0.15);
+  font-weight: 600;
+}
+
+.pattern-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pattern-edit-head h1 {
+  margin: 0;
+}
+
+.edit-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0 4px;
+}
+
+.merge-config {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.merge-config label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.merge-config input {
+  width: 42px;
+  padding: 2px 4px;
+  font-size: 12px;
+  background: #0f1115;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 .inspector {

@@ -120,7 +120,7 @@ const boxSize = (b: Box): number => Math.max(b.maxX - b.minX, b.maxY - b.minY);
  * `tol` is the positional tolerance in geometry units. Returned points are
  * de-duplicated so a single crossing yields a single point.
  */
-function intersectBeziers(a: Bezier, b: Bezier, tol = 1e-6): Vec2[] {
+export function intersectBeziers(a: Bezier, b: Bezier, tol = 1e-6): Vec2[] {
   const hits: Vec2[] = [];
 
   const recurse = (c1: Bezier, c2: Bezier, depth: number): void => {

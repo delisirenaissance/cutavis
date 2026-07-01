@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "parts": [
+    "basicSkirt_backPart",
+    "basicSkirt_frontPart"
+  ],
+  "edits": [
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart",
+      "dx": 3.875,
+      "dy": 0
+    },
+    {
+      "type": "split",
+      "part": "basicSkirt_backPart",
+      "from": {
+        "line": "L12",
+        "t": 0.245
+      },
+      "to": {
+        "line": "L17",
+        "t": 0.25
+      },
+      "bow": {
+        "c1": [
+          0.3333333333333333,
+          0.08864042526928796
+        ],
+        "c2": [
+          0.6666666666666666,
+          0.08864042526928796
+        ]
+      }
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart#A",
+      "dx": 0.7500000344442206,
+      "dy": -2.3750001090733655
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart#C",
+      "dx": -1.125000051666331,
+      "dy": -2.6250001205547724
+    },
+    {
+      "type": "rotate",
+      "part": "basicSkirt_backPart#C",
+      "center": {
+        "line": "L17",
+        "t": 1
+      },
+      "angle": -0.2593781985939545
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart#C",
+      "dx": -0.3750000172221103,
+      "dy": -3.0000001377768823
+    }
+  ]
+}

@@ -7,15 +7,9 @@
   "edits": [
     {
       "type": "translate",
-      "part": "basicSkirt_frontPart",
-      "dx": -3.875,
-      "dy": -4.625
-    },
-    {
-      "type": "translate",
       "part": "basicSkirt_backPart",
-      "dx": 4.99999988198926,
-      "dy": 5.374999873138455
+      "dx": 3.875,
+      "dy": 0
     }
   ]
 }

@@ -18,10 +18,25 @@ import type { VariableTables } from "@/lib/variableCsv";
 import { loadState, saveState, type StoredState } from "@/lib/storage";
 import type { Measurements, PartDef } from "@/lib/types";
 import {
-  applyEditsToGeometry,
+  applyPatternEdits,
+  rootPartOf,
   patternSignature,
   type PatternEdit,
+  type PartPiece,
 } from "@/lib/edits";
+import {
+  extractOuterBoundary,
+  boundarySegments,
+  buildCutBezier,
+  splitGeometry,
+  parsePathBezier,
+  nearestParamOnBezier,
+  findMergeCandidates,
+  pullTogetherOffset,
+  type Vec2,
+  type CutBow,
+  type MergeSeg,
+} from "@/lib/split";
 import { PatternSvg } from "@/components/PatternSvg";
 import { SaveModal } from "@/components/SaveModal";
 import { AddPartModal } from "@/components/AddPartModal";
@@ -47,7 +62,7 @@ function isUsablePartText(text: string | undefined): boolean {
   }
 }
 
-type Tab = "measurements" | "edit-part" | "display" | "pattern";
+type Tab = "measurements" | "display" | "pattern";
 type VariableSets = Record<string, string>;
 
 const DEFAULT_SET = MEASUREMENT_SET_NAMES[0];
@@ -104,6 +119,34 @@ export default function Home() {
   // Signature of the pattern as last loaded/saved — used to detect changes.
   const [savedPatternSig, setSavedPatternSig] = useState<string | null>(null);
   const [patternStatus, setPatternStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  // Whether the Pattern tab is in edit-mode (JSON editor + part dropdown visible).
+  const [patternEditMode, setPatternEditMode] = useState(false);
+  // Part whose lines are highlighted in blue on the plot (non-edit-mode only).
+  const [highlightedPart, setHighlightedPart] = useState<string | null>(null);
+  // In-progress cut. `part` is the piece being cut; `from`/`to` are the placed
+  // boundary points (anchored by line + parameter t); `bow` curves the cut.
+  const [cut, setCut] = useState<{
+    part: string;
+    from?: { line: string; t: number; point: Vec2 };
+    to?: { line: string; t: number; point: Vec2 };
+    bow?: CutBow;
+  } | null>(null);
+  // In-progress rotation. `part` is the piece; `center` is the rotation center
+  // anchored on a seam (definition-relative t) once picked. The angle is chosen
+  // by a click-hold-drag on the plot and committed on release.
+  const [rotate, setRotate] = useState<{
+    part: string;
+    center?: { line: string; t: number; point: Vec2 };
+  } | null>(null);
+  // In-progress merge: `sel` is the first picked line; `cand` the matching line
+  // chosen from the candidates. Tolerances x (angle°) and y (length %) are
+  // configurable next to the button.
+  const [merge, setMerge] = useState<{
+    sel?: { pieceId: string; line: string };
+    cand?: { pieceId: string; line: string };
+  } | null>(null);
+  const [mergeAngle, setMergeAngle] = useState(5);
+  const [mergeLenPct, setMergeLenPct] = useState(10);
 
   // ── Persistence: write a snapshot of all current state plus any overrides ──
 
@@ -145,7 +188,15 @@ export default function Home() {
     // Restore persisted state
     const stored = loadState();
 
-    if (stored.activeTab)                  setActiveTab(stored.activeTab);
+    if (stored.activeTab) {
+      // The old standalone "Edit Pattern" tab is now the Pattern tab's edit-mode.
+      if (stored.activeTab === "edit-part") {
+        setActiveTab("pattern");
+        setPatternEditMode(true);
+      } else {
+        setActiveTab(stored.activeTab);
+      }
+    }
     if (stored.edits)                      setEdits(stored.edits);
     if (stored.currentPatternName) {
       setCurrentPatternName(stored.currentPatternName);
@@ -225,7 +276,10 @@ export default function Home() {
   // expr-eval built-ins (e.g. `length`), which the detector can't always see.
   // Any remaining detected-but-unknown name still defaults to 0 so partial edits
   // keep rendering.
-  const partGeometries = useMemo(() => {
+  // Parse and evaluate each loaded part's BASE geometry (before edits). Edits
+  // are replayed separately (below) so this only re-runs on text/measurement
+  // changes, not on every move.
+  const partEntries = useMemo(() => {
     return loadedParts.map((lp) => {
       let part: PartDef | null = null;
       let parseError: string | null = null;
@@ -234,31 +288,37 @@ export default function Home() {
       } catch (err) {
         parseError = (err as Error).message;
       }
-      let geometry: GeometryResult | null = null;
+      let base: GeometryResult | null = null;
       if (part) {
         const s: Measurements = {
           ...variableValues,
           ...(part.part_specific_user_definable_variables ?? {}),
         };
         for (const v of collectVariables(part)) if (!(v in s)) s[v] = 0;
-        // Evaluate the base geometry, then replay this part's edit history on
-        // top of it (so moves/splits survive measurement changes).
-        const base = evaluatePart(part, s);
-        const partEdits = edits.filter((e) => e.part === lp.file);
-        geometry = partEdits.length ? applyEditsToGeometry(base, partEdits) : base;
+        base = evaluatePart(part, s);
       }
-      return { file: lp.file, part, parseError, geometry };
+      return { file: lp.file, part, parseError, base };
     });
-  }, [loadedParts, variableValues, edits]);
+  }, [loadedParts, variableValues]);
 
-  // Merge all parts' geometry into one result drawn on a shared plot.
+  // Replay each part's edit history, expanding splits into separate pieces.
+  // One loaded part becomes one piece (its file id) until a split turns it into
+  // two (file#A / file#B), each independently selectable and movable.
+  const plotPieces = useMemo(() => {
+    const bases: PartPiece[] = partEntries
+      .filter((e) => e.base)
+      .map((e) => ({ id: e.file, geometry: e.base! }));
+    return applyPatternEdits(bases, edits);
+  }, [partEntries, edits]);
+
+  // Merge all pieces' geometry into one result drawn on a shared plot.
   const merged = useMemo(
-    () => mergeGeometries(partGeometries.map((p) => ({ id: p.file, geometry: p.geometry }))),
-    [partGeometries]
+    () => mergeGeometries(plotPieces.map((p) => ({ id: p.id, geometry: p.geometry }))),
+    [plotPieces]
   );
 
-  // The part currently shown in the editor.
-  const activeEntry = partGeometries.find((p) => p.file === activePartFile) ?? null;
+  // The part currently shown in the editor (a loaded part / root, never a piece).
+  const activeEntry = partEntries.find((p) => p.file === activePartFile) ?? null;
   const activeLoaded = loadedParts.find((p) => p.file === activePartFile) ?? null;
   const activePart = activeEntry?.part ?? null;
   const activeParseError = activeEntry?.parseError ?? null;
@@ -268,13 +328,13 @@ export default function Home() {
   // variables that are shared across parts (an edit applies to all of them).
   const varPartCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const pg of partGeometries) {
+    for (const pg of partEntries) {
       for (const k of Object.keys(pg.part?.part_specific_user_definable_variables ?? {})) {
         counts[k] = (counts[k] ?? 0) + 1;
       }
     }
     return counts;
-  }, [partGeometries]);
+  }, [partEntries]);
 
   const formulaErrors = Object.entries(merged.errors);
 
@@ -282,14 +342,126 @@ export default function Home() {
   // from the last file load or save (i.e., there are unsaved changes).
   const isDirty = activeLoaded != null && activeLoaded.text !== activeLoaded.savedText;
 
-  // Per-part geometries (edits already applied) for the plot's selectable groups.
-  const plotParts = useMemo(
-    () =>
-      partGeometries
-        .filter((p) => p.geometry)
-        .map((p) => ({ id: p.file, geometry: p.geometry! })),
-    [partGeometries]
+  // The pieces drawn on the plot (edits already applied) — selectable groups.
+  const plotParts = plotPieces;
+
+  // ── Cut (split) derived state ──────────────────────────────────────────────
+
+  // The currently-selected piece and whether it forms a closed outline (only a
+  // closed outline can be cut). Used to enable the scissors button.
+  const selectedPiece = useMemo(
+    () => plotPieces.find((p) => p.id === selectedPlotPart) ?? null,
+    [plotPieces, selectedPlotPart]
   );
+  const selectedCuttable = useMemo(
+    () => (selectedPiece ? extractOuterBoundary(boundarySegments(selectedPiece.geometry)).ok : false),
+    [selectedPiece]
+  );
+  const canCut = patternEditMode && cut == null && rotate == null && merge == null && selectedPiece != null && selectedCuttable;
+  const canRotate = patternEditMode && rotate == null && cut == null && merge == null && selectedPiece != null && selectedCuttable;
+  const canMerge = patternEditMode && merge == null && cut == null && rotate == null && plotPieces.length >= 2;
+
+  // The piece being cut and its outline loop (to snap clicks onto).
+  const cutPiece = useMemo(
+    () => (cut ? plotPieces.find((p) => p.id === cut.part) ?? null : null),
+    [cut, plotPieces]
+  );
+  const cutLoop = useMemo(
+    () => (cutPiece ? extractOuterBoundary(boundarySegments(cutPiece.geometry)).loop : []),
+    [cutPiece]
+  );
+  const cutPhase: "start" | "end" | "adjust" =
+    !cut ? "start" : !cut.from ? "start" : !cut.to ? "end" : "adjust";
+  // Preview curve between the two placed points (with any bow).
+  const cutPreview = useMemo(
+    () => (cut?.from && cut?.to ? buildCutBezier(cut.from.point, cut.to.point, cut.bow) : null),
+    [cut]
+  );
+  // Would this cut actually divide the part? (Reuses the real split logic.)
+  const cutValid = useMemo(() => {
+    if (!cut?.from || !cut?.to || !cutPiece) return false;
+    return (
+      splitGeometry(
+        cutPiece.geometry,
+        { line: cut.from.line, t: cut.from.t },
+        { line: cut.to.line, t: cut.to.t },
+        cut.bow
+      ) != null
+    );
+  }, [cut, cutPiece]);
+  const cutInstruction =
+    cutPhase === "start"
+      ? "Draw a line where to cut the part: first, the start point."
+      : cutPhase === "end"
+      ? "…and now the end point."
+      : "Optionally drag the line to bow it into a curve, then press “Cut now”.";
+
+  // ── Rotate derived state ───────────────────────────────────────────────────
+  const rotatePiece = useMemo(
+    () => (rotate ? plotPieces.find((p) => p.id === rotate.part) ?? null : null),
+    [rotate, plotPieces]
+  );
+  const rotateLoop = useMemo(
+    () => (rotatePiece ? extractOuterBoundary(boundarySegments(rotatePiece.geometry)).loop : []),
+    [rotatePiece]
+  );
+  const rotateInstruction = !rotate
+    ? ""
+    : !rotate.center
+    ? "Select the rotation center: click a point on a seam."
+    : "Click and hold, then drag to rotate the part around the center.";
+
+  // ── Merge derived state ────────────────────────────────────────────────────
+  // Outer-boundary segments of every piece (for the merge hover/pick overlay).
+  const allOutlineSegs = useMemo(() => {
+    const segs: { pieceId: string; line: string; bezier: import("@/lib/split").Bezier }[] = [];
+    for (const p of plotPieces) {
+      const ob = extractOuterBoundary(boundarySegments(p.geometry));
+      if (ob.ok) for (const s of ob.loop) segs.push({ pieceId: p.id, line: s.line, bezier: s.bezier });
+    }
+    return segs;
+  }, [plotPieces]);
+
+  // Candidate lines for the currently selected line.
+  const mergeCandidates: MergeSeg[] = useMemo(() => {
+    if (!merge?.sel) return [];
+    return findMergeCandidates(plotPieces, merge.sel.pieceId, merge.sel.line, mergeAngle, mergeLenPct);
+  }, [merge?.sel, plotPieces, mergeAngle, mergeLenPct]);
+
+  // Role-tagged segments handed to the plot overlay.
+  const mergeOverlaySegs = useMemo(() => {
+    if (!merge) return [];
+    const candSet = new Set(mergeCandidates.map((c) => `${c.pieceId}::${c.line}`));
+    const selKey = merge.sel ? `${merge.sel.pieceId}::${merge.sel.line}` : null;
+    const candKey = merge.cand ? `${merge.cand.pieceId}::${merge.cand.line}` : null;
+    return allOutlineSegs.map((s) => {
+      const key = `${s.pieceId}::${s.line}`;
+      let role: "plain" | "selected" | "candidate" | "chosen" | "dim" = "plain";
+      let clickable = false;
+      if (!merge.sel) {
+        role = "plain"; clickable = true; // phase 1: pick any line
+      } else if (key === selKey) {
+        role = "selected";
+      } else if (key === candKey) {
+        role = "chosen"; clickable = true;
+      } else if (candSet.has(key)) {
+        role = "candidate"; clickable = true;
+      } else {
+        role = "dim";
+      }
+      return { key, bezier: s.bezier, role, clickable };
+    });
+  }, [merge, mergeCandidates, allOutlineSegs]);
+
+  const mergeInstruction = !merge
+    ? ""
+    : !merge.sel
+    ? "Merge: click a line on a part."
+    : !merge.cand
+    ? mergeCandidates.length === 0
+      ? "No matching lines found — adjust the ° / % tolerances."
+      : "Pick a matching line (green) to merge with."
+    : "“Pull together” to align the parts, then “Merge now”.";
 
   // The current pattern (loaded parts + edits) differs from the last save?
   const currentPatternSig = patternSignature(loadedParts.map((p) => p.file), edits);
@@ -300,6 +472,28 @@ export default function Home() {
   function handleTabChange(tab: Tab) {
     setActiveTab(tab);
     persist({ activeTab: tab });
+  }
+
+  // Enter the Pattern tab's edit-mode (shows the JSON editor + part dropdown).
+  // Clear the blue name-highlight, which is a non-edit-mode affordance.
+  function enterPatternEdit() {
+    setPatternEditMode(true);
+    setHighlightedPart(null);
+  }
+
+  function exitPatternEdit() {
+    setPatternEditMode(false);
+    // Drop the orange plot selection so the overview view stays clean.
+    setSelectedPlotPart(null);
+    setCut(null);
+    setRotate(null);
+    setMerge(null);
+  }
+
+  // Non-edit-mode: click a part name to highlight its plot lines in blue.
+  // Clicking the already-highlighted part clears the highlight.
+  function handleHighlightPart(filename: string) {
+    setHighlightedPart((cur) => (cur === filename ? null : filename));
   }
 
   // Replace the active part's editor text (re-renders the plot immediately).
@@ -373,11 +567,21 @@ export default function Home() {
   function handleRemovePart(filename: string) {
     const next = loadedParts.filter((p) => p.file !== filename);
     const active = activePartFile === filename ? next[0]?.file ?? "" : activePartFile;
-    const nextEdits = edits.filter((e) => e.part !== filename);
+    // Drop every edit that references this part family — including split
+    // sub-pieces and merges that involve it.
+    const editRoots = (e: PatternEdit): string[] =>
+      e.type === "merge"
+        ? [rootPartOf(e.partA), rootPartOf(e.partB)]
+        : [rootPartOf(e.part)];
+    const nextEdits = edits.filter((e) => !editRoots(e).includes(filename));
     setLoadedParts(next);
     setActivePartFile(active);
     setEdits(nextEdits);
-    if (selectedPlotPart === filename) setSelectedPlotPart(null);
+    if (selectedPlotPart && rootPartOf(selectedPlotPart) === filename) setSelectedPlotPart(null);
+    if (highlightedPart === filename) setHighlightedPart(null);
+    if (cut && rootPartOf(cut.part) === filename) setCut(null);
+    if (rotate && rootPartOf(rotate.part) === filename) setRotate(null);
+    if (merge) setMerge(null);
     persist({ loadedParts: next, activePartFile: active, edits: nextEdits });
   }
 
@@ -388,8 +592,11 @@ export default function Home() {
   function handlePlotSelect(id: string | null) {
     setSelectedPlotPart(id);
     if (id) {
-      setActivePartFile(id);
-      persist({ activePartFile: id });
+      // A plot piece may be a split sub-id (e.g. "skirt#A"); the editor tracks
+      // the loaded part it belongs to.
+      const root = rootPartOf(id);
+      setActivePartFile(root);
+      persist({ activePartFile: root });
     }
   }
 
@@ -406,6 +613,163 @@ export default function Home() {
     if (edits.length === 0) return;
     const nextEdits = edits.slice(0, -1);
     setEdits(nextEdits);
+    persist({ edits: nextEdits });
+  }
+
+  // ── Cut (split) interaction ────────────────────────────────────────────────
+
+  function startCut() {
+    if (!canCut || !selectedPlotPart) return;
+    setCut({ part: selectedPlotPart });
+  }
+
+  function abortCut() {
+    setCut(null);
+  }
+
+  // Place the next cut point (already snapped onto the outline). The snap's t is
+  // relative to the outline-walk direction, which isn't stable across
+  // measurement changes — so re-express it along the line's definition direction
+  // before storing, keeping `point` (definition-independent) for the preview.
+  function handleCutPlace(snap: { line: string; t: number; point: Vec2 }) {
+    const def = cutPiece ? parsePathBezier(cutPiece.geometry.paths[snap.line]) : null;
+    const tDef = def ? nearestParamOnBezier(def, snap.point) : snap.t;
+    const anchor = { line: snap.line, t: tDef, point: snap.point };
+    setCut((c) => {
+      if (!c) return c;
+      if (!c.from) return { ...c, from: anchor };
+      if (!c.to) return { ...c, to: anchor };
+      return c;
+    });
+  }
+
+  // Bow the cut: translate the handle's position into a chord-relative curve.
+  function handleCutBow(handle: Vec2) {
+    setCut((c) => {
+      if (!c || !c.from || !c.to) return c;
+      const { point: pA } = c.from;
+      const { point: pB } = c.to;
+      const vx = pB.x - pA.x;
+      const vy = pB.y - pA.y;
+      const len = Math.hypot(vx, vy) || 1;
+      const mx = (pA.x + pB.x) / 2;
+      const my = (pA.y + pB.y) / 2;
+      // Signed perpendicular distance of the handle from the chord midpoint,
+      // scaled so the curve's midpoint tracks the handle (see buildCutBezier).
+      const signed = ((handle.x - mx) * -vy + (handle.y - my) * vx) / len;
+      const perp = (4 / 3) * (signed / len);
+      const bow: CutBow | undefined =
+        Math.abs(perp) < 1e-3 ? undefined : { c1: [1 / 3, perp], c2: [2 / 3, perp] };
+      return { ...c, bow };
+    });
+  }
+
+  // Commit the cut as a split edit — the part becomes two movable pieces.
+  function commitCut() {
+    if (!cut?.from || !cut?.to || !cutValid) return;
+    const edit: PatternEdit = {
+      type: "split",
+      part: cut.part,
+      from: { line: cut.from.line, t: cut.from.t },
+      to: { line: cut.to.line, t: cut.to.t },
+      bow: cut.bow,
+    };
+    const nextEdits = [...edits, edit];
+    setEdits(nextEdits);
+    setCut(null);
+    setSelectedPlotPart(null);
+    persist({ edits: nextEdits });
+  }
+
+  // ── Rotate interaction ─────────────────────────────────────────────────────
+
+  function startRotate() {
+    if (!canRotate || !selectedPlotPart) return;
+    setRotate({ part: selectedPlotPart });
+  }
+
+  function abortRotate() {
+    setRotate(null);
+  }
+
+  // Pick the rotation center on a seam. Store t along the line's definition
+  // direction (measurement-stable), like the cut anchors.
+  function handleRotateCenter(snap: { line: string; t: number; point: Vec2 }) {
+    const def = rotatePiece ? parsePathBezier(rotatePiece.geometry.paths[snap.line]) : null;
+    const tDef = def ? nearestParamOnBezier(def, snap.point) : snap.t;
+    setRotate((r) => (r ? { ...r, center: { line: snap.line, t: tDef, point: snap.point } } : r));
+  }
+
+  // Commit the rotation as an edit once the drag ends.
+  function handleRotateCommit(angle: number) {
+    if (!rotate?.center || Math.abs(angle) < 1e-4) {
+      setRotate(null);
+      return;
+    }
+    const edit: PatternEdit = {
+      type: "rotate",
+      part: rotate.part,
+      center: { line: rotate.center.line, t: rotate.center.t },
+      angle,
+    };
+    const nextEdits = [...edits, edit];
+    setEdits(nextEdits);
+    setRotate(null);
+    setSelectedPlotPart(null);
+    persist({ edits: nextEdits });
+  }
+
+  // ── Merge interaction ──────────────────────────────────────────────────────
+
+  function startMerge() {
+    if (!canMerge) return;
+    setMerge({});
+  }
+
+  function abortMerge() {
+    setMerge(null);
+  }
+
+  // Pick a line: first click sets the selected line, second sets the merge line.
+  function handleMergePick(key: string) {
+    const sep = key.indexOf("::");
+    const pieceId = key.slice(0, sep);
+    const line = key.slice(sep + 2);
+    setMerge((m) => {
+      if (!m) return m;
+      if (!m.sel) return { ...m, sel: { pieceId, line } };
+      return { ...m, cand: { pieceId, line } };
+    });
+  }
+
+  // Translate the merging part so its line best aligns with the selected line.
+  function pullTogether() {
+    if (!merge?.sel || !merge?.cand) return;
+    const gSel = plotPieces.find((p) => p.id === merge.sel!.pieceId);
+    const gCand = plotPieces.find((p) => p.id === merge.cand!.pieceId);
+    if (!gSel || !gCand) return;
+    const off = pullTogetherOffset(gSel.geometry, merge.sel.line, gCand.geometry, merge.cand.line);
+    if (!off || (Math.abs(off.dx) < 1e-6 && Math.abs(off.dy) < 1e-6)) return;
+    const edit: PatternEdit = { type: "translate", part: merge.cand.pieceId, dx: off.dx, dy: off.dy };
+    const nextEdits = [...edits, edit];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+  }
+
+  // Commit the merge: the two parts become one combined piece.
+  function mergeNow() {
+    if (!merge?.sel || !merge?.cand) return;
+    const edit: PatternEdit = {
+      type: "merge",
+      partA: merge.sel.pieceId,
+      lineA: merge.sel.line,
+      partB: merge.cand.pieceId,
+      lineB: merge.cand.line,
+    };
+    const nextEdits = [...edits, edit];
+    setEdits(nextEdits);
+    setMerge(null);
+    setSelectedPlotPart(null);
     persist({ edits: nextEdits });
   }
 
@@ -566,6 +930,7 @@ export default function Home() {
     setEdits(patternEdits);
     setCurrentPatternName(name);
     setSelectedPlotPart(null);
+    setHighlightedPart(null);
     setSavedPatternSig(patternSignature(files, patternEdits));
     persist({
       loadedParts: parts,
@@ -606,13 +971,6 @@ export default function Home() {
           title="Measurements"
         >
           <span>Measurements</span>
-        </button>
-        <button
-          className={`tab-btn${activeTab === "edit-part" ? " active" : ""}`}
-          onClick={() => handleTabChange("edit-part")}
-          title="Edit Pattern"
-        >
-          <span>Edit Pattern</span>
         </button>
         <button
           className={`tab-btn${activeTab === "display" ? " active" : ""}`}
@@ -719,40 +1077,165 @@ export default function Home() {
           </>
         )}
 
-        {activeTab === "edit-part" && (
-          <div className="edit-part-wrap">
-            <h2>Loaded parts</h2>
-            <ul className="loaded-parts">
-              {loadedParts.length === 0 && (
-                <li className="loaded-part-empty">No parts loaded.</li>
-              )}
-              {loadedParts.map((p) => {
-                const dirty = p.text !== p.savedText;
-                return (
-                  <li
-                    key={p.file}
-                    className={`loaded-part${p.file === activePartFile ? " active" : ""}`}
-                  >
+        {saveModalOpen && (
+          <SaveModal
+            currentFile={activePartFile}
+            onSave={handleSave}
+            onClose={() => setSaveModalOpen(false)}
+          />
+        )}
+
+        {addModalOpen && (
+          <AddPartModal
+            availableFiles={partFiles.filter(
+              (f) => !loadedParts.some((p) => p.file === f)
+            )}
+            onAdd={handleAddPart}
+            onClose={() => setAddModalOpen(false)}
+          />
+        )}
+
+        {activeTab === "display" && (
+          <div className="display-settings">
+            <h1>Display</h1>
+            <p className="subtitle">Control which elements are shown in the plot.</p>
+
+            <h2>Lines</h2>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={showAuxLines}
+                onChange={(e) => handleShowAuxLinesChange(e.target.checked)}
+              />
+              Show aux lines
+            </label>
+
+            <h2>Points</h2>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={showPoints}
+                onChange={(e) => handleShowPointsChange(e.target.checked)}
+              />
+              Show points
+              <span className="checkbox-note">(marker points are always visible)</span>
+            </label>
+          </div>
+        )}
+
+        {activeTab === "pattern" && !patternEditMode && (
+          <div className="pattern-tab">
+            <h1>Pattern</h1>
+            <p className="subtitle">
+              A pattern is a set of parts loaded together plus the edits applied to them.
+            </p>
+
+            <h2>Load pattern</h2>
+            <select
+              className="set-select"
+              value={currentPatternName}
+              onChange={(e) => handleLoadPattern(e.target.value)}
+            >
+              <option value="">— select a pattern —</option>
+              {patternFiles.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+
+            <h2>Parts in this pattern:</h2>
+            {loadedParts.length === 0 ? (
+              <p className="subtitle">No parts loaded yet. Use “Edit pattern” to add parts.</p>
+            ) : (
+              <ul className="pattern-part-list">
+                {loadedParts.map((p) => (
+                  <li key={p.file}>
                     <button
-                      className="loaded-part-name"
-                      onClick={() => handleSelectPart(p.file)}
-                      title="Edit this part"
+                      className={`pattern-part-name${
+                        p.file === highlightedPart ? " highlighted" : ""
+                      }`}
+                      onClick={() => handleHighlightPart(p.file)}
+                      title="Highlight this part's lines on the plot"
                     >
                       {p.file}
-                      {dirty && <span className="loaded-part-dirty" title="Unsaved changes"> ●</span>}
-                    </button>
-                    <button
-                      className="loaded-part-remove"
-                      onClick={() => handleRemovePart(p.file)}
-                      title={`Remove ${p.file} from the plot`}
-                      aria-label={`Remove ${p.file}`}
-                    >
-                      ✕
                     </button>
                   </li>
-                );
-              })}
-            </ul>
+                ))}
+              </ul>
+            )}
+
+            <div className="edit-part-actions">
+              <button
+                className="btn-secondary"
+                onClick={enterPatternEdit}
+                title="Edit the parts and JSON of this pattern"
+              >
+                Edit pattern
+              </button>
+            </div>
+
+            <p className="checkbox-note">
+              {edits.length} edit{edits.length === 1 ? "" : "s"} in history
+              {currentPatternName && (
+                <>
+                  {" · "}
+                  {patternDirty ? "unsaved changes" : `saved as “${currentPatternName}”`}
+                </>
+              )}
+            </p>
+
+            {patternStatus && !patternStatus.ok && (
+              <p className="reload-err">{patternStatus.msg}</p>
+            )}
+          </div>
+        )}
+
+        {activeTab === "pattern" && patternEditMode && (
+          <div className="pattern-tab edit-part-wrap">
+            <div className="pattern-edit-head">
+              <h1>Pattern · edit</h1>
+              <button
+                className="btn-secondary"
+                onClick={exitPatternEdit}
+                title="Return to the pattern overview"
+              >
+                ← Done
+              </button>
+            </div>
+
+            <h2>Parts in this pattern:</h2>
+            {loadedParts.length === 0 ? (
+              <p className="subtitle">No parts loaded. Add a part to start editing.</p>
+            ) : (
+              <div className="field">
+                <label htmlFor="edit-part-select">Editing part</label>
+                <select
+                  id="edit-part-select"
+                  className="set-select"
+                  value={activePartFile}
+                  onChange={(e) => handleSelectPart(e.target.value)}
+                >
+                  {loadedParts.map((p) => {
+                    const dirty = p.text !== p.savedText;
+                    return (
+                      <option key={p.file} value={p.file}>
+                        {p.file}
+                        {dirty ? " ●" : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+                {activePartFile !== "" && (
+                  <button
+                    className="loaded-part-remove"
+                    onClick={() => handleRemovePart(activePartFile)}
+                    title={`Remove ${activePartFile} from the plot`}
+                    aria-label={`Remove ${activePartFile}`}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
             <button
               className="btn-add-part"
               onClick={() => setAddModalOpen(true)}
@@ -824,84 +1307,9 @@ export default function Home() {
                 </div>
               </>
             )}
-          </div>
-        )}
 
-        {saveModalOpen && (
-          <SaveModal
-            currentFile={activePartFile}
-            onSave={handleSave}
-            onClose={() => setSaveModalOpen(false)}
-          />
-        )}
+            <hr className="edit-divider" />
 
-        {addModalOpen && (
-          <AddPartModal
-            availableFiles={partFiles.filter(
-              (f) => !loadedParts.some((p) => p.file === f)
-            )}
-            onAdd={handleAddPart}
-            onClose={() => setAddModalOpen(false)}
-          />
-        )}
-
-        {activeTab === "display" && (
-          <div className="display-settings">
-            <h1>Display</h1>
-            <p className="subtitle">Control which elements are shown in the plot.</p>
-
-            <h2>Lines</h2>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={showAuxLines}
-                onChange={(e) => handleShowAuxLinesChange(e.target.checked)}
-              />
-              Show aux lines
-            </label>
-
-            <h2>Points</h2>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={showPoints}
-                onChange={(e) => handleShowPointsChange(e.target.checked)}
-              />
-              Show points
-              <span className="checkbox-note">(marker points are always visible)</span>
-            </label>
-          </div>
-        )}
-
-        {activeTab === "pattern" && (
-          <div className="pattern-tab">
-            <h1>Pattern</h1>
-            <p className="subtitle">
-              A pattern is a set of parts loaded together plus the edits applied to them.
-            </p>
-
-            <h2>Load pattern</h2>
-            <select
-              className="set-select"
-              value={currentPatternName}
-              onChange={(e) => handleLoadPattern(e.target.value)}
-            >
-              <option value="">— select a pattern —</option>
-              {patternFiles.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
-
-            <h2>This pattern</h2>
-            {loadedParts.length === 0 ? (
-              <p className="subtitle">No parts loaded yet. Add parts in the Edit Pattern tab.</p>
-            ) : (
-              <ul className="pattern-part-list">
-                {loadedParts.map((p) => (
-                  <li key={p.file}>{p.file}</li>
-                ))}
-              </ul>
-            )}
             <p className="checkbox-note">
               {edits.length} edit{edits.length === 1 ? "" : "s"} in history
               {currentPatternName && (
@@ -943,10 +1351,111 @@ export default function Home() {
         <div className="plot-main">
           <div className="plot-toolbar">
             <span className="plot-toolbar-info">
-              {selectedPlotPart
+              {cut
+                ? cutInstruction
+                : rotate
+                ? rotateInstruction
+                : merge
+                ? mergeInstruction
+                : selectedPlotPart
                 ? `Selected: ${selectedPlotPart} — drag on the plot to move it`
-                : "Click a part on the plot to select it"}
+                : patternEditMode
+                ? "Click a part on the plot to select it"
+                : "Enter edit mode to modify the pattern"}
             </span>
+            {patternEditMode && (merge || (!cut && !rotate)) && (
+              <span className="merge-config" title="Merge tolerances: max angle and max length difference">
+                <label>
+                  ≤
+                  <input
+                    type="number" min={0} max={90} value={mergeAngle}
+                    onChange={(e) => setMergeAngle(Number(e.target.value))}
+                  />
+                  °
+                </label>
+                <label>
+                  ±
+                  <input
+                    type="number" min={0} max={100} value={mergeLenPct}
+                    onChange={(e) => setMergeLenPct(Number(e.target.value))}
+                  />
+                  %
+                </label>
+              </span>
+            )}
+            {patternEditMode && !cut && !rotate && !merge && (
+              <>
+                <button
+                  className="btn-secondary"
+                  onClick={startCut}
+                  disabled={!canCut}
+                  title={
+                    canCut
+                      ? "Cut the selected part along a line"
+                      : "Select a part with a closed outline to cut it"
+                  }
+                >
+                  ✂ Cut
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={startRotate}
+                  disabled={!canRotate}
+                  title={
+                    canRotate
+                      ? "Rotate the selected part around a point"
+                      : "Select a part with a closed outline to rotate it"
+                  }
+                >
+                  ↻ Rotate
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={startMerge}
+                  disabled={!canMerge}
+                  title={canMerge ? "Merge two parts along a line" : "Load at least two parts to merge"}
+                >
+                  ⧉ Merge
+                </button>
+              </>
+            )}
+            {merge && (
+              <>
+                {merge.sel && merge.cand && (
+                  <>
+                    <button className="btn-secondary" onClick={pullTogether} title="Move the parts together to align the lines">
+                      Pull together
+                    </button>
+                    <button className="btn-primary" onClick={mergeNow} title="Merge the two parts into one">
+                      Merge now
+                    </button>
+                  </>
+                )}
+                <button className="btn-secondary" onClick={abortMerge} title="Cancel the merge">
+                  Abort merge
+                </button>
+              </>
+            )}
+            {cut && (
+              <>
+                <button
+                  className="btn-primary"
+                  onClick={commitCut}
+                  disabled={!cutValid}
+                  title={cutValid ? "Split the part in two" : "Place two points that divide the part"}
+                >
+                  Cut now
+                </button>
+                <button className="btn-secondary" onClick={abortCut} title="Cancel this cut">
+                  Abort cutting
+                </button>
+              </>
+            )}
+            {rotate && (
+              <button className="btn-secondary" onClick={abortRotate} title="Cancel this rotation">
+                Abort rotate
+              </button>
+            )}
             <button
               className="btn-secondary"
               onClick={handleUndo}
@@ -965,8 +1474,36 @@ export default function Home() {
                 showAuxLines={showAuxLines}
                 showPoints={showPoints}
                 selectedPart={selectedPlotPart}
+                highlightedPart={highlightedPart}
+                editMode={patternEditMode}
+                activePart={activePartFile}
                 onSelectPart={handlePlotSelect}
                 onMovePart={handleMovePart}
+                cut={
+                  cut
+                    ? {
+                        loop: cutLoop,
+                        phase: cutPhase,
+                        from: cut.from?.point ?? null,
+                        to: cut.to?.point ?? null,
+                        preview: cutPreview,
+                        onPlace: handleCutPlace,
+                        onBow: handleCutBow,
+                      }
+                    : null
+                }
+                rotate={
+                  rotate
+                    ? {
+                        loop: rotateLoop,
+                        partId: rotate.part,
+                        center: rotate.center?.point ?? null,
+                        onPickCenter: handleRotateCenter,
+                        onCommit: handleRotateCommit,
+                      }
+                    : null
+                }
+                merge={merge ? { segments: mergeOverlaySegs, onPick: handleMergePick } : null}
               />
             ) : (
               <div className="subtitle">Fix the part JSON to see the pattern.</div>

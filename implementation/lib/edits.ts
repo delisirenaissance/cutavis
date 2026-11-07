@@ -15,9 +15,11 @@
 
 import type { GeometryResult } from "./geometry";
 import { splitGeometry, resolveAnchorPoint, mergeGeometryPair, type CutBow, type SplitAnchor } from "./split";
+import type { AllowanceType, MergeMarker } from "./types";
+import { smoothGeometry } from "./smooth";
 
 /** A single, undoable edit applied to one part or (after a split) a sub-piece,
- *  identified by its piece id (`file`, or `file#A` / `file#B` after cuts).
+ *  identified by its piece id (`file`, or `file_1`, `file_2`, … after cuts).
  *
  *  `split` cuts one piece into two along a curve between two boundary anchors.
  *  The anchors are stored *parametrically* (boundary line name + parameter t)
@@ -27,7 +29,13 @@ export type PatternEdit =
   | { type: "translate"; part: string; dx: number; dy: number }
   | { type: "split"; part: string; from: SplitAnchor; to: SplitAnchor; bow?: CutBow }
   | { type: "rotate"; part: string; center: SplitAnchor; angle: number }
-  | { type: "merge"; partA: string; lineA: string; partB: string; lineB: string };
+  | { type: "merge"; partA: string; lineA: string; partB: string; lineB: string }
+  /** Specify one line of a piece: its seam-allowance type and optional merge
+   *  marker. Later lineSpec edits on the same line override earlier ones. */
+  | { type: "lineSpec"; part: string; line: string; allowance: AllowanceType; marker: MergeMarker | null }
+  /** Replace ≥ 2 consecutive outline lines of a piece by one fitted cubic
+   *  (re-fitted on every replay, so it follows measurement changes). */
+  | { type: "smooth"; part: string; lines: string[] };
 
 /** On-disk pattern format. `parts` lists the part files to load together;
  *  `edits` is the ordered history applied to them. */
@@ -151,18 +159,58 @@ export function applyEditsToGeometry(
 }
 
 /** One renderable piece of a loaded part. Before any split there is a single
- *  piece with the root id; each split replaces one piece with two (`id#A`,
- *  `id#B`). */
+ *  piece with the root id; each split replaces one piece with its N children
+ *  `id_1` … `id_N` (so cutting `partA_2` again yields `partA_2_1`, …). A merge
+ *  of two pieces yields `idA&idB`. */
 export interface PartPiece {
   id: string;
   geometry: GeometryResult;
 }
 
-/** The root part id a (possibly split) piece id belongs to, e.g.
- *  "skirt#A#B" → "skirt". */
-export function rootPartOf(id: string): string {
-  const i = id.indexOf("#");
-  return i < 0 ? id : id.slice(0, i);
+/** Id of the n-th (1-based) child created by cutting piece `parentId`. */
+export function childPartId(parentId: string, n: number): string {
+  return `${parentId}_${n}`;
+}
+
+const DERIVED_SUFFIX_RE = /^\d+(?:_\d+)*$/;
+
+/** True if piece `pieceId` is the part `partId` itself, was derived from it by
+ *  cuts (`partId_1`, `partId_2_1`, …), or is a merge involving such a piece.
+ *  Part file names may themselves contain "_", so only purely numeric `_n`
+ *  suffixes count as derived. */
+export function belongsToPart(pieceId: string, partId: string): boolean {
+  return pieceId.split("&").some(
+    (c) =>
+      c === partId ||
+      (c.startsWith(partId + "_") && DERIVED_SUFFIX_RE.test(c.slice(partId.length + 1)))
+  );
+}
+
+/** The loaded part file a (possibly derived) piece id belongs to, e.g.
+ *  "skirt_2_1" → "skirt". The longest matching file name wins (for a merged
+ *  piece: whichever involved file is longest). Returns null if none matches. */
+export function rootPartOf(id: string, loadedFiles: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const f of loadedFiles) {
+    if (belongsToPart(id, f) && (best == null || f.length > best.length)) best = f;
+  }
+  return best;
+}
+
+/** Convert piece ids from the legacy letter scheme (`skirt#A#B`, `a#A&b#B`) to
+ *  the numeric one (`skirt_1_2`, `a_1&b_2`). Ids already in the new form pass
+ *  through unchanged, so this is safe to run on every load. */
+export function migratePieceId(id: string): string {
+  return id.replace(/#([A-Z])/g, (_, L: string) => `_${L.charCodeAt(0) - 64}`);
+}
+
+/** Migrate a whole edit history to the numeric piece-id scheme. */
+export function migrateEdits(edits: PatternEdit[]): PatternEdit[] {
+  return edits.map((e) =>
+    e.type === "merge"
+      ? { ...e, partA: migratePieceId(e.partA), partB: migratePieceId(e.partB) }
+      : { ...e, part: migratePieceId(e.part) }
+  );
 }
 
 /**
@@ -172,7 +220,7 @@ export function rootPartOf(id: string): string {
  * Edits are processed in commit order against a shared piece map, so they can
  * interleave and reference pieces produced by earlier edits:
  *  • translate/rotate transform a piece in place,
- *  • split replaces one piece with two (`id#A`, `id#B`),
+ *  • split replaces one piece with its N children (`id_1` … `id_N`),
  *  • merge combines two pieces into one (`idA&idB`).
  * An edit whose target piece(s) are missing, or that can't be applied to the
  * current geometry, is skipped (graceful degradation, like unknown edit types).
@@ -190,8 +238,12 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[]): Par
       if (!g) continue;
       const halves = splitGeometry(g, e.from, e.to, e.bow);
       if (!halves) continue; // leave the piece intact if the cut can't apply
+      // Never overwrite an unrelated piece that already carries a child's id
+      // (e.g. a separately loaded part file literally named "partA_1").
+      const ids = halves.map((_, i) => childPartId(e.part, i + 1));
+      if (ids.some((id) => pieces.has(id))) continue;
       pieces.delete(e.part);
-      for (const h of halves) pieces.set(`${e.part}#${h.suffix}`, h.geometry);
+      halves.forEach((h, i) => pieces.set(ids[i], h.geometry));
     } else if (e.type === "rotate") {
       const g = pieces.get(e.part);
       if (!g) continue;
@@ -207,6 +259,18 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[]): Par
       pieces.delete(e.partA);
       pieces.delete(e.partB);
       pieces.set(`${e.partA}&${e.partB}`, merged);
+    } else if (e.type === "smooth") {
+      const g = pieces.get(e.part);
+      if (!g) continue;
+      const sm = smoothGeometry(g, e.lines);
+      if (sm) pieces.set(e.part, sm); // lines no longer consecutive/present → skip
+    } else if (e.type === "lineSpec") {
+      const g = pieces.get(e.part);
+      if (!g || !(e.line in g.paths)) continue; // line gone → nothing to specify
+      pieces.set(e.part, {
+        ...g,
+        lineSpecs: { ...g.lineSpecs, [e.line]: { allowance: e.allowance, marker: e.marker } },
+      });
     }
   }
 

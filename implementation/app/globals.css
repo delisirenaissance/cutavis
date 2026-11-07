@@ -425,6 +425,55 @@ h2:first-child {
   cursor: default;
 }
 
+/* Specify-line dropdowns in the plot toolbar. */
+.specify-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.specify-field select {
+  background: #0f1115;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+/* Cut sub-mode toggle (draw cut line / measure). */
+.cut-mode-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.cut-mode-switch button {
+  background: none;
+  color: var(--muted);
+  border: none;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cut-mode-switch button + button {
+  border-left: 1px solid var(--border);
+}
+
+.cut-mode-switch button:hover:not(.active) {
+  color: var(--text);
+}
+
+.cut-mode-switch button.active {
+  background: rgba(110, 168, 254, 0.18);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* ── Customize (part-specific variables) ─────────────── */
 
 .customize-section {
@@ -540,6 +589,48 @@ h2:first-child {
   background: rgba(255, 107, 107, 0.08);
   border: 1px solid var(--error);
   border-radius: 6px;
+}
+
+/* Print modal */
+.print-modal {
+  width: 400px;
+}
+
+.print-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.print-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.print-label strong {
+  color: var(--text);
+  text-transform: none;
+}
+
+.print-field input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+.print-range-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.print-summary {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.5;
 }
 
 .modal-actions {
@@ -671,6 +762,22 @@ svg {
 
 .pattern-part-name:hover {
   background: rgba(110, 168, 254, 0.08);
+}
+
+.derived-part-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 2px 16px;
+}
+
+.derived-part-list li {
+  border: none;
+  background: none;
+}
+
+.derived-part-list .pattern-part-name {
+  font-size: 0.92em;
+  opacity: 0.85;
 }
 
 .pattern-part-name.highlighted {

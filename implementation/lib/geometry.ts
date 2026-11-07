@@ -11,7 +11,7 @@
 // references are detected and reported as errors.
 
 import { Parser } from "expr-eval";
-import type { Measurements, PartDef } from "./types";
+import type { LineSpec, Measurements, PartDef } from "./types";
 
 const detectParser = new Parser();
 
@@ -43,6 +43,10 @@ export interface GeometryResult {
   localValues: Record<string, number>;
   bbox: { minX: number; minY: number; maxX: number; maxY: number } | null;
   errors: Record<string, string>;
+  /** Per-line specifications (allowance type, merge marker), keyed by line
+   *  name. Set by `lineSpec` pattern edits; a missing entry means the default
+   *  (`DEFAULT_LINE_SPEC`). Carried over to fragments when a piece is cut. */
+  lineSpecs?: Record<string, LineSpec>;
 }
 
 // ── Geometric function helpers ────────────────────────────────────────────────

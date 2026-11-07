@@ -35,19 +35,19 @@
     },
     {
       "type": "translate",
-      "part": "basicSkirt_backPart#A",
+      "part": "basicSkirt_backPart_1",
       "dx": 0.7500000344442206,
       "dy": -2.3750001090733655
     },
     {
       "type": "translate",
-      "part": "basicSkirt_backPart#C",
+      "part": "basicSkirt_backPart_3",
       "dx": -1.125000051666331,
       "dy": -2.6250001205547724
     },
     {
       "type": "rotate",
-      "part": "basicSkirt_backPart#C",
+      "part": "basicSkirt_backPart_3",
       "center": {
         "line": "L17",
         "t": 1
@@ -56,9 +56,72 @@
     },
     {
       "type": "translate",
-      "part": "basicSkirt_backPart#C",
+      "part": "basicSkirt_backPart_3",
       "dx": -0.3750000172221103,
       "dy": -3.0000001377768823
+    },
+    {
+      "type": "merge",
+      "partA": "basicSkirt_backPart_3",
+      "lineA": "L15",
+      "partB": "basicSkirt_backPart_1",
+      "lineB": "L14"
+    },
+    {
+      "type": "split",
+      "part": "basicSkirt_frontPart",
+      "from": {
+        "line": "L22",
+        "t": 0.745
+      },
+      "to": {
+        "line": "L11",
+        "t": 0.49
+      },
+      "bow": {
+        "c1": [
+          0.6846271111637432,
+          -0.3648202298215691
+        ],
+        "c2": [
+          0.6631144153969634,
+          0.14914157525535252
+        ]
+      }
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_frontPart_1",
+      "dx": 0.12500000574070344,
+      "dy": -5.875000269813062
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_frontPart_3",
+      "dx": 0.2500000130616242,
+      "dy": -5.875000306948169
+    },
+    {
+      "type": "rotate",
+      "part": "basicSkirt_frontPart_3",
+      "center": {
+        "line": "L9",
+        "t": 0.975
+      },
+      "angle": -0.14293372242755664
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_frontPart_3",
+      "dx": -1.750001351041946,
+      "dy": -1.2500009650299615
+    },
+    {
+      "type": "merge",
+      "partA": "basicSkirt_frontPart_3",
+      "lineA": "L7",
+      "partB": "basicSkirt_frontPart_1",
+      "lineB": "L8"
     }
   ]
 }

@@ -56,3 +56,44 @@ export interface PartDef {
 }
 
 export type Measurements = Record<string, number>;
+
+// ── Line specifications (set per line in pattern edit mode) ──────────────────
+
+/** Seam-allowance class of a line. "seam" is the default for every line. */
+export type AllowanceType = "seam" | "maxi-allowance-hem" | "mini-allowance-hem";
+
+/** Seam allowance printed outside each line type, in mm. */
+export const ALLOWANCE_MM: Record<AllowanceType, number> = {
+  seam: 10,
+  "maxi-allowance-hem": 40,
+  "mini-allowance-hem": 7,
+};
+
+export const ALLOWANCE_TYPES: AllowanceType[] = ["seam", "maxi-allowance-hem", "mini-allowance-hem"];
+
+/** Which lines of different parts belong together when sewing. Informational
+ *  only — not used for printing. */
+export type MergeMarker =
+  | "waistline-front"
+  | "waistline-back"
+  | "armscye-front"
+  | "armscye-back"
+  | "neckline-front"
+  | "neckline-back";
+
+export const MERGE_MARKERS: MergeMarker[] = [
+  "waistline-front",
+  "waistline-back",
+  "armscye-front",
+  "armscye-back",
+  "neckline-front",
+  "neckline-back",
+];
+
+/** Specification of one line of a (possibly derived) part. */
+export interface LineSpec {
+  allowance: AllowanceType;
+  marker: MergeMarker | null;
+}
+
+export const DEFAULT_LINE_SPEC: LineSpec = { allowance: "seam", marker: null };

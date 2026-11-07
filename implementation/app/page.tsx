@@ -16,9 +16,22 @@ import {
 } from "@/lib/bodyformVariables";
 import type { VariableTables } from "@/lib/variableCsv";
 import { loadState, saveState, type StoredState } from "@/lib/storage";
-import type { Measurements, PartDef } from "@/lib/types";
+import {
+  ALLOWANCE_MM,
+  ALLOWANCE_TYPES,
+  DEFAULT_LINE_SPEC,
+  MERGE_MARKERS,
+  type AllowanceType,
+  type Measurements,
+  type MergeMarker,
+  type PartDef,
+} from "@/lib/types";
+import { seamAllowanceOutline } from "@/lib/allowance";
+import { findSmoothRun, fitCubicToChain, SMOOTH_SKIP_MAX_CM } from "@/lib/smooth";
 import {
   applyPatternEdits,
+  belongsToPart,
+  migrateEdits,
   rootPartOf,
   patternSignature,
   type PatternEdit,
@@ -28,6 +41,9 @@ import {
   extractOuterBoundary,
   boundarySegments,
   buildCutBezier,
+  chordRelative,
+  normalizeCutBow,
+  STRAIGHT_CUT_BOW,
   splitGeometry,
   parsePathBezier,
   nearestParamOnBezier,
@@ -39,6 +55,8 @@ import {
 } from "@/lib/split";
 import { PatternSvg } from "@/components/PatternSvg";
 import { SaveModal } from "@/components/SaveModal";
+import { PrintModal } from "@/components/PrintModal";
+import { buildPatternPdf, type PrintSettings } from "@/lib/pdf";
 import { AddPartModal } from "@/components/AddPartModal";
 import InspectorPanel from "@/components/InspectorPanel";
 
@@ -106,6 +124,7 @@ export default function Home() {
 
   const [showAuxLines, setShowAuxLines] = useState(false);
   const [showPoints, setShowPoints] = useState(true);
+  const [showAllowance, setShowAllowance] = useState(true);
 
   // Ephemeral UI state — not persisted
   const [partFiles, setPartFiles] = useState<string[]>([]);
@@ -113,6 +132,13 @@ export default function Home() {
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [savePatternModalOpen, setSavePatternModalOpen] = useState(false);
+  const [printModalOpen, setPrintModalOpen] = useState(false);
+  // Last-used print settings (kept for the session so the modal reopens with them).
+  const [printSettings, setPrintSettings] = useState<PrintSettings>({
+    format: "A4",
+    orientation: "portrait",
+    marginMm: 10,
+  });
   // The part currently selected on the plot (highlighted, movable). Independent
   // of activePartFile so clearing the plot selection never empties the editor.
   const [selectedPlotPart, setSelectedPlotPart] = useState<string | null>(null);
@@ -125,8 +151,13 @@ export default function Home() {
   const [highlightedPart, setHighlightedPart] = useState<string | null>(null);
   // In-progress cut. `part` is the piece being cut; `from`/`to` are the placed
   // boundary points (anchored by line + parameter t); `bow` curves the cut.
+  // `mode` switches between drawing the cut line and measuring distances along
+  // the outline; `marks` are the temporary points created by measuring (usable
+  // as cut start/end points). Everything is discarded on "Cut now"/abort.
   const [cut, setCut] = useState<{
     part: string;
+    mode: "draw" | "measure";
+    marks: { line: string; t: number; point: Vec2 }[];
     from?: { line: string; t: number; point: Vec2 };
     to?: { line: string; t: number; point: Vec2 };
     bow?: CutBow;
@@ -147,6 +178,16 @@ export default function Home() {
   } | null>(null);
   const [mergeAngle, setMergeAngle] = useState(5);
   const [mergeLenPct, setMergeLenPct] = useState(10);
+  // "Specify line" mode: `sel` is the picked line; `allowance`/`marker` are the
+  // values in the dropdowns (prefilled from the line's current spec).
+  const [specify, setSpecify] = useState<{
+    sel?: { pieceId: string; line: string };
+    allowance: AllowanceType;
+    marker: MergeMarker | null;
+  } | null>(null);
+  // "Smooth" mode: the piece and the outline lines picked so far (≥ 2
+  // consecutive ones can be replaced by one fitted cubic).
+  const [smooth, setSmooth] = useState<{ pieceId?: string; lines: string[] } | null>(null);
 
   // ── Persistence: write a snapshot of all current state plus any overrides ──
 
@@ -166,6 +207,7 @@ export default function Home() {
       bodyformSelections,
       showAuxLines,
       showPoints,
+      showAllowance,
       ...overrides,
     });
   }
@@ -197,7 +239,7 @@ export default function Home() {
         setActiveTab(stored.activeTab);
       }
     }
-    if (stored.edits)                      setEdits(stored.edits);
+    if (stored.edits)                      setEdits(migrateEdits(stored.edits));
     if (stored.currentPatternName) {
       setCurrentPatternName(stored.currentPatternName);
     }
@@ -207,6 +249,7 @@ export default function Home() {
     if (stored.bodyformSelections)         setBodyformSelections({ ...defaultBodyformSelections(), ...stored.bodyformSelections });
     if (stored.showAuxLines !== undefined) setShowAuxLines(stored.showAuxLines);
     if (stored.showPoints   !== undefined) setShowPoints(stored.showPoints);
+    if (stored.showAllowance !== undefined) setShowAllowance(stored.showAllowance);
 
     // ── Restore the loaded parts ────────────────────────────────────────────
     // Prefer the new multi-part storage; otherwise migrate the old single-part
@@ -302,14 +345,30 @@ export default function Home() {
   }, [loadedParts, variableValues]);
 
   // Replay each part's edit history, expanding splits into separate pieces.
-  // One loaded part becomes one piece (its file id) until a split turns it into
-  // two (file#A / file#B), each independently selectable and movable.
+  // One loaded part becomes one piece (its file id) until a cut turns it into
+  // derived parts (file_1, file_2, …; cutting file_2 again gives file_2_1, …),
+  // each independently selectable, movable, rotatable and cuttable.
   const plotPieces = useMemo(() => {
     const bases: PartPiece[] = partEntries
       .filter((e) => e.base)
       .map((e) => ({ id: e.file, geometry: e.base! }));
     return applyPatternEdits(bases, edits);
   }, [partEntries, edits]);
+
+  const loadedFiles = useMemo(() => loadedParts.map((p) => p.file), [loadedParts]);
+
+  // Derived parts (created by cuts/merges) currently on the plot, per loaded
+  // part file, in natural order (file_1, file_2, file_2_1, …, file_10).
+  const derivedPartsByFile = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const f of loadedFiles) {
+      out[f] = plotPieces
+        .map((p) => p.id)
+        .filter((id) => id !== f && belongsToPart(id, f))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    }
+    return out;
+  }, [plotPieces, loadedFiles]);
 
   // Merge all pieces' geometry into one result drawn on a shared plot.
   const merged = useMemo(
@@ -357,9 +416,13 @@ export default function Home() {
     () => (selectedPiece ? extractOuterBoundary(boundarySegments(selectedPiece.geometry)).ok : false),
     [selectedPiece]
   );
-  const canCut = patternEditMode && cut == null && rotate == null && merge == null && selectedPiece != null && selectedCuttable;
-  const canRotate = patternEditMode && rotate == null && cut == null && merge == null && selectedPiece != null && selectedCuttable;
-  const canMerge = patternEditMode && merge == null && cut == null && rotate == null && plotPieces.length >= 2;
+  // Only one edit tool (cut / rotate / merge / specify / smooth) at a time.
+  const toolBusy = cut != null || rotate != null || merge != null || specify != null || smooth != null;
+  const canCut = patternEditMode && !toolBusy && selectedPiece != null && selectedCuttable;
+  const canRotate = patternEditMode && !toolBusy && selectedPiece != null && selectedCuttable;
+  const canMerge = patternEditMode && !toolBusy && plotPieces.length >= 2;
+  const canSpecify = patternEditMode && !toolBusy && plotPieces.length > 0;
+  const canSmooth = patternEditMode && !toolBusy && plotPieces.length > 0;
 
   // The piece being cut and its outline loop (to snap clicks onto).
   const cutPiece = useMemo(
@@ -377,6 +440,13 @@ export default function Home() {
     () => (cut?.from && cut?.to ? buildCutBezier(cut.from.point, cut.to.point, cut.bow) : null),
     [cut]
   );
+  // Positions of the two draggable control handles. A straight cut (no bow)
+  // shows them on the chord at 1/3 and 2/3.
+  const cutControls = useMemo((): [Vec2, Vec2] | null => {
+    if (!cut?.from || !cut?.to) return null;
+    const b = buildCutBezier(cut.from.point, cut.to.point, cut.bow ?? STRAIGHT_CUT_BOW);
+    return [b[1], b[2]];
+  }, [cut]);
   // Would this cut actually divide the part? (Reuses the real split logic.)
   const cutValid = useMemo(() => {
     if (!cut?.from || !cut?.to || !cutPiece) return false;
@@ -390,11 +460,13 @@ export default function Home() {
     );
   }, [cut, cutPiece]);
   const cutInstruction =
-    cutPhase === "start"
-      ? "Draw a line where to cut the part: first, the start point."
+    cut?.mode === "measure"
+      ? "Measure: click a start point on the outline, then move along it — the distance is shown at the cursor. Click, or type a value (cm) + Enter, to mark the point. Esc cancels."
+      : cutPhase === "start"
+      ? "Draw a line where to cut the part: first, the start point (snaps to marks)."
       : cutPhase === "end"
       ? "…and now the end point."
-      : "Optionally drag the line to bow it into a curve, then press “Cut now”.";
+      : "Drag the start/end points along the outline, or the two hollow control points to curve the cut — then press “Cut now”.";
 
   // ── Rotate derived state ───────────────────────────────────────────────────
   const rotatePiece = useMemo(
@@ -453,6 +525,76 @@ export default function Home() {
     });
   }, [merge, mergeCandidates, allOutlineSegs]);
 
+  // ── Specify-line derived state ─────────────────────────────────────────────
+  // Every outline line is pickable; lines that already have a non-default spec
+  // are shown green, the picked line highlighted.
+  const specifyOverlaySegs = useMemo(() => {
+    if (!specify) return [];
+    const selKey = specify.sel ? `${specify.sel.pieceId}::${specify.sel.line}` : null;
+    const geomById = new Map(plotPieces.map((p) => [p.id, p.geometry]));
+    return allOutlineSegs.map((s) => {
+      const key = `${s.pieceId}::${s.line}`;
+      const spec = geomById.get(s.pieceId)?.lineSpecs?.[s.line];
+      const specified = !!spec && (spec.allowance !== "seam" || spec.marker != null);
+      const role: "plain" | "selected" | "candidate" =
+        key === selKey ? "selected" : specified ? "candidate" : "plain";
+      return { key, bezier: s.bezier, role, clickable: true };
+    });
+  }, [specify, allOutlineSegs, plotPieces]);
+
+  const specifyInstruction = !specify
+    ? ""
+    : !specify.sel
+    ? "Specify line: click a line on the plot (green = already specified)."
+    : `Line ${specify.sel.line} of ${specify.sel.pieceId}: choose its type and merge marker, then “Apply”.`;
+
+  // ── Smooth derived state ───────────────────────────────────────────────────
+  const smoothPiece = smooth?.pieceId ? plotPieces.find((p) => p.id === smooth.pieceId) ?? null : null;
+  // The run for the current selection (incl. auto-included short gap lines)
+  // and its fitted curve; both null unless the selection is a valid run.
+  const smoothRun = useMemo(
+    () => (smooth && smoothPiece ? findSmoothRun(smoothPiece.geometry, smooth.lines) : null),
+    [smooth, smoothPiece]
+  );
+  const smoothCurve = useMemo(() => (smoothRun ? fitCubicToChain(smoothRun.segs) : null), [smoothRun]);
+  const smoothOverlaySegs = useMemo(() => {
+    if (!smooth) return [];
+    const chosen = new Set(smoothRun ? smoothRun.lines : smooth.lines);
+    const segs = allOutlineSegs.map((s) => {
+      const mine = s.pieceId === smooth.pieceId;
+      const role: "plain" | "selected" | "dim" =
+        mine && chosen.has(s.line) ? "selected" : smooth.pieceId && !mine ? "dim" : "plain";
+      return { key: `${s.pieceId}::${s.line}`, bezier: s.bezier, role, clickable: true };
+    });
+    // Live preview of the smoothed curve (orange, not clickable).
+    return smoothCurve
+      ? [...segs, { key: "__smooth_preview", bezier: smoothCurve, role: "chosen" as const, clickable: false }]
+      : segs;
+  }, [smooth, smoothRun, allOutlineSegs, smoothCurve]);
+
+  const smoothInstruction = !smooth
+    ? ""
+    : smooth.lines.length < 2
+    ? `Smooth: click at least 2 consecutive outline lines of one part (click again to deselect). Lines ≤ ${SMOOTH_SKIP_MAX_CM} cm between them are included automatically.`
+    : smoothRun && smoothCurve
+    ? `${smoothRun.lines.length} lines selected${
+        smoothRun.lines.length > smooth.lines.length
+          ? ` (${smoothRun.lines.length - smooth.lines.length} short one${smoothRun.lines.length - smooth.lines.length === 1 ? "" : "s"} auto-included)`
+          : ""
+      } — the orange curve previews the result. Press “Smooth now”.`
+    : `The selected lines must be consecutive along the outline (gaps of lines ≤ ${SMOOTH_SKIP_MAX_CM} cm are fine) and not the whole outline.`;
+
+  // Seam-allowance polygons per piece for the plot.
+  const allowanceByPiece = useMemo(() => {
+    if (!showAllowance) return {};
+    const out: Record<string, Vec2[]> = {};
+    for (const p of plotPieces) {
+      const poly = seamAllowanceOutline(p.geometry);
+      if (poly) out[p.id] = poly;
+    }
+    return out;
+  }, [plotPieces, showAllowance]);
+
   const mergeInstruction = !merge
     ? ""
     : !merge.sel
@@ -488,6 +630,8 @@ export default function Home() {
     setCut(null);
     setRotate(null);
     setMerge(null);
+    setSpecify(null);
+    setSmooth(null);
   }
 
   // Non-edit-mode: click a part name to highlight its plot lines in blue.
@@ -567,21 +711,22 @@ export default function Home() {
   function handleRemovePart(filename: string) {
     const next = loadedParts.filter((p) => p.file !== filename);
     const active = activePartFile === filename ? next[0]?.file ?? "" : activePartFile;
-    // Drop every edit that references this part family — including split
-    // sub-pieces and merges that involve it.
-    const editRoots = (e: PatternEdit): string[] =>
-      e.type === "merge"
-        ? [rootPartOf(e.partA), rootPartOf(e.partB)]
-        : [rootPartOf(e.part)];
-    const nextEdits = edits.filter((e) => !editRoots(e).includes(filename));
+    // Drop every edit that references this part family — including derived
+    // parts from cuts (file_1, file_2_1, …) and merges that involve it.
+    const ofPart = (id: string) => belongsToPart(id, filename);
+    const touches = (e: PatternEdit): boolean =>
+      e.type === "merge" ? ofPart(e.partA) || ofPart(e.partB) : ofPart(e.part);
+    const nextEdits = edits.filter((e) => !touches(e));
     setLoadedParts(next);
     setActivePartFile(active);
     setEdits(nextEdits);
-    if (selectedPlotPart && rootPartOf(selectedPlotPart) === filename) setSelectedPlotPart(null);
-    if (highlightedPart === filename) setHighlightedPart(null);
-    if (cut && rootPartOf(cut.part) === filename) setCut(null);
-    if (rotate && rootPartOf(rotate.part) === filename) setRotate(null);
+    if (selectedPlotPart && ofPart(selectedPlotPart)) setSelectedPlotPart(null);
+    if (highlightedPart && ofPart(highlightedPart)) setHighlightedPart(null);
+    if (cut && ofPart(cut.part)) setCut(null);
+    if (rotate && ofPart(rotate.part)) setRotate(null);
     if (merge) setMerge(null);
+    if (specify?.sel && ofPart(specify.sel.pieceId)) setSpecify((s) => (s ? { ...s, sel: undefined } : s));
+    if (smooth?.pieceId && ofPart(smooth.pieceId)) setSmooth({ lines: [] });
     persist({ loadedParts: next, activePartFile: active, edits: nextEdits });
   }
 
@@ -592,11 +737,13 @@ export default function Home() {
   function handlePlotSelect(id: string | null) {
     setSelectedPlotPart(id);
     if (id) {
-      // A plot piece may be a split sub-id (e.g. "skirt#A"); the editor tracks
-      // the loaded part it belongs to.
-      const root = rootPartOf(id);
-      setActivePartFile(root);
-      persist({ activePartFile: root });
+      // A plot piece may be a derived part (e.g. "skirt_2_1"); the JSON editor
+      // tracks the loaded part file it was derived from.
+      const root = rootPartOf(id, loadedFiles);
+      if (root) {
+        setActivePartFile(root);
+        persist({ activePartFile: root });
+      }
     }
   }
 
@@ -606,6 +753,39 @@ export default function Home() {
     const nextEdits: PatternEdit[] = [...edits, { type: "translate", part: id, dx, dy }];
     setEdits(nextEdits);
     persist({ edits: nextEdits });
+  }
+
+  // ── Print to PDF ───────────────────────────────────────────────────────────
+
+  // What gets printed mirrors the plot's display settings.
+  const printOptions = useMemo(
+    () => ({ showAuxLines, showPoints, showAllowance }),
+    [showAuxLines, showPoints, showAllowance]
+  );
+
+  // Build the tiled 1:1 PDF of the current pattern (all pieces, edits applied)
+  // and download it.
+  function handleCreatePdf(settings: PrintSettings) {
+    const title = currentPatternName || "cutavis pattern";
+    const res = buildPatternPdf(plotPieces, settings, printOptions, {
+      title,
+      info: [
+        `Parts: ${plotPieces.map((p) => p.id).join(", ")}`,
+        `Measurements: ${selectedSet} - created ${new Date().toLocaleString()}`,
+      ],
+    });
+    if (!res) throw new Error("Nothing to print.");
+    const blob = new Blob([res.bytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.replace(/[^\w.-]+/g, "_")}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    setPrintSettings(settings);
+    setPrintModalOpen(false);
   }
 
   // Undo the most recent edit in the history.
@@ -620,7 +800,21 @@ export default function Home() {
 
   function startCut() {
     if (!canCut || !selectedPlotPart) return;
-    setCut({ part: selectedPlotPart });
+    setCut({ part: selectedPlotPart, mode: "draw", marks: [] });
+  }
+
+  function setCutMode(mode: "draw" | "measure") {
+    setCut((c) => (c ? { ...c, mode } : c));
+  }
+
+  // Measure mode: keep the measured end point as a temporary mark.
+  function handleAddCutMark(snap: { line: string; t: number; point: Vec2 }) {
+    const mark = cutAnchorFromSnap(snap);
+    setCut((c) => (c ? { ...c, marks: [...c.marks, mark] } : c));
+  }
+
+  function clearCutMarks() {
+    setCut((c) => (c ? { ...c, marks: [] } : c));
   }
 
   function abortCut() {
@@ -631,10 +825,14 @@ export default function Home() {
   // relative to the outline-walk direction, which isn't stable across
   // measurement changes — so re-express it along the line's definition direction
   // before storing, keeping `point` (definition-independent) for the preview.
-  function handleCutPlace(snap: { line: string; t: number; point: Vec2 }) {
+  function cutAnchorFromSnap(snap: { line: string; t: number; point: Vec2 }) {
     const def = cutPiece ? parsePathBezier(cutPiece.geometry.paths[snap.line]) : null;
     const tDef = def ? nearestParamOnBezier(def, snap.point) : snap.t;
-    const anchor = { line: snap.line, t: tDef, point: snap.point };
+    return { line: snap.line, t: tDef, point: snap.point };
+  }
+
+  function handleCutPlace(snap: { line: string; t: number; point: Vec2 }) {
+    const anchor = cutAnchorFromSnap(snap);
     setCut((c) => {
       if (!c) return c;
       if (!c.from) return { ...c, from: anchor };
@@ -643,24 +841,21 @@ export default function Home() {
     });
   }
 
-  // Bow the cut: translate the handle's position into a chord-relative curve.
-  function handleCutBow(handle: Vec2) {
+  // Drag a placed start/end point along the outline (re-snapped by the plot).
+  // The control points are chord-relative, so the curve's shape follows along.
+  function handleCutMoveEnd(which: "from" | "to", snap: { line: string; t: number; point: Vec2 }) {
+    const anchor = cutAnchorFromSnap(snap);
+    setCut((c) => (c && c[which] ? { ...c, [which]: anchor } : c));
+  }
+
+  // Drag one of the two Bézier control points of the cut curve to an absolute
+  // position; it is stored relative to the start→end chord.
+  function handleCutMoveControl(which: "c1" | "c2", p: Vec2) {
     setCut((c) => {
       if (!c || !c.from || !c.to) return c;
-      const { point: pA } = c.from;
-      const { point: pB } = c.to;
-      const vx = pB.x - pA.x;
-      const vy = pB.y - pA.y;
-      const len = Math.hypot(vx, vy) || 1;
-      const mx = (pA.x + pB.x) / 2;
-      const my = (pA.y + pB.y) / 2;
-      // Signed perpendicular distance of the handle from the chord midpoint,
-      // scaled so the curve's midpoint tracks the handle (see buildCutBezier).
-      const signed = ((handle.x - mx) * -vy + (handle.y - my) * vx) / len;
-      const perp = (4 / 3) * (signed / len);
-      const bow: CutBow | undefined =
-        Math.abs(perp) < 1e-3 ? undefined : { c1: [1 / 3, perp], c2: [2 / 3, perp] };
-      return { ...c, bow };
+      const current = c.bow ?? STRAIGHT_CUT_BOW;
+      const bow: CutBow = { ...current, [which]: chordRelative(c.from.point, c.to.point, p) };
+      return { ...c, bow: normalizeCutBow(bow) };
     });
   }
 
@@ -728,6 +923,70 @@ export default function Home() {
 
   function abortMerge() {
     setMerge(null);
+  }
+
+  // ── Smooth interaction ─────────────────────────────────────────────────────
+
+  function startSmooth() {
+    if (!canSmooth) return;
+    setSmooth({ lines: [] });
+  }
+
+  // Toggle a line in the selection; picking a line of another piece starts a
+  // new selection on that piece.
+  function handleSmoothPick(key: string) {
+    const sep = key.indexOf("::");
+    const pieceId = key.slice(0, sep);
+    const line = key.slice(sep + 2);
+    setSmooth((s) => {
+      if (!s) return s;
+      if (s.pieceId !== pieceId) return { pieceId, lines: [line] };
+      const lines = s.lines.includes(line) ? s.lines.filter((l) => l !== line) : [...s.lines, line];
+      return { pieceId: lines.length ? pieceId : undefined, lines };
+    });
+  }
+
+  // Commit the smoothing as an edit. The stored lines are the full run in
+  // outline order — including auto-included short lines — so the replay
+  // doesn't depend on the ≤ 1 cm rule (a short line may grow with measurements).
+  function commitSmooth() {
+    if (!smooth?.pieceId || !smoothRun) return;
+    const nextEdits: PatternEdit[] = [...edits, { type: "smooth", part: smooth.pieceId, lines: smoothRun.lines }];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+    setSmooth(null);
+  }
+
+  // ── Specify-line interaction ───────────────────────────────────────────────
+
+  function startSpecify() {
+    if (!canSpecify) return;
+    setSpecify({ ...DEFAULT_LINE_SPEC });
+  }
+
+  // Pick a line; the dropdowns are prefilled with its current specification.
+  function handleSpecifyPick(key: string) {
+    const sep = key.indexOf("::");
+    const pieceId = key.slice(0, sep);
+    const line = key.slice(sep + 2);
+    const spec = plotPieces.find((p) => p.id === pieceId)?.geometry.lineSpecs?.[line] ?? DEFAULT_LINE_SPEC;
+    setSpecify({ sel: { pieceId, line }, allowance: spec.allowance, marker: spec.marker });
+  }
+
+  // Store the chosen spec as an undoable edit; stay in the mode for the next line.
+  function applySpecify() {
+    if (!specify?.sel) return;
+    const edit: PatternEdit = {
+      type: "lineSpec",
+      part: specify.sel.pieceId,
+      line: specify.sel.line,
+      allowance: specify.allowance,
+      marker: specify.marker,
+    };
+    const nextEdits = [...edits, edit];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+    setSpecify({ ...DEFAULT_LINE_SPEC });
   }
 
   // Pick a line: first click sets the selected line, second sets the merge line.
@@ -863,6 +1122,11 @@ export default function Home() {
     persist({ showPoints: checked });
   }
 
+  function handleShowAllowanceChange(checked: boolean) {
+    setShowAllowance(checked);
+    persist({ showAllowance: checked });
+  }
+
   async function handleSave(filename: string) {
     if (!activeLoaded) return;
     const text = activeLoaded.text;
@@ -923,7 +1187,8 @@ export default function Home() {
         }
       })
     );
-    const patternEdits = pattern.edits ?? [];
+    // Older pattern files name cut pieces "part#A"; normalise to "part_1".
+    const patternEdits = migrateEdits(pattern.edits ?? []);
 
     setLoadedParts(parts);
     setActivePartFile(parts[0]?.file ?? "");
@@ -1085,6 +1350,16 @@ export default function Home() {
           />
         )}
 
+        {printModalOpen && (
+          <PrintModal
+            pieces={plotPieces}
+            options={printOptions}
+            initial={printSettings}
+            onCreate={handleCreatePdf}
+            onClose={() => setPrintModalOpen(false)}
+          />
+        )}
+
         {addModalOpen && (
           <AddPartModal
             availableFiles={partFiles.filter(
@@ -1119,6 +1394,19 @@ export default function Home() {
               />
               Show points
               <span className="checkbox-note">(marker points are always visible)</span>
+            </label>
+
+            <h2>Seam allowance</h2>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={showAllowance}
+                onChange={(e) => handleShowAllowanceChange(e.target.checked)}
+              />
+              Show seam allowance
+              <span className="checkbox-note">
+                (on the plot and in the PDF; seam 10 mm, mini-allowance-hem 7 mm, maxi-allowance-hem 4 cm — set per line with “Specify line”)
+              </span>
             </label>
           </div>
         )}
@@ -1158,6 +1446,23 @@ export default function Home() {
                     >
                       {p.file}
                     </button>
+                    {derivedPartsByFile[p.file]?.length > 0 && (
+                      <ul className="derived-part-list">
+                        {derivedPartsByFile[p.file].map((id) => (
+                          <li key={id}>
+                            <button
+                              className={`pattern-part-name${
+                                id === highlightedPart ? " highlighted" : ""
+                              }`}
+                              onClick={() => handleHighlightPart(id)}
+                              title="Highlight this derived part on the plot"
+                            >
+                              {id}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -1234,6 +1539,26 @@ export default function Home() {
                     ✕
                   </button>
                 )}
+              </div>
+            )}
+            {activePartFile !== "" && derivedPartsByFile[activePartFile]?.length > 0 && (
+              <div className="field">
+                <label>Derived parts of {activePartFile} (click to select)</label>
+                <ul className="pattern-part-list">
+                  {derivedPartsByFile[activePartFile].map((id) => (
+                    <li key={id}>
+                      <button
+                        className={`pattern-part-name${
+                          id === selectedPlotPart ? " highlighted" : ""
+                        }`}
+                        onClick={() => handlePlotSelect(id === selectedPlotPart ? null : id)}
+                        title="Select this part on the plot (move, rotate, cut, merge)"
+                      >
+                        {id}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
             <button
@@ -1357,13 +1682,17 @@ export default function Home() {
                 ? rotateInstruction
                 : merge
                 ? mergeInstruction
+                : specify
+                ? specifyInstruction
+                : smooth
+                ? smoothInstruction
                 : selectedPlotPart
                 ? `Selected: ${selectedPlotPart} — drag on the plot to move it`
                 : patternEditMode
                 ? "Click a part on the plot to select it"
                 : "Enter edit mode to modify the pattern"}
             </span>
-            {patternEditMode && (merge || (!cut && !rotate)) && (
+            {patternEditMode && (merge || !toolBusy) && (
               <span className="merge-config" title="Merge tolerances: max angle and max length difference">
                 <label>
                   ≤
@@ -1383,7 +1712,7 @@ export default function Home() {
                 </label>
               </span>
             )}
-            {patternEditMode && !cut && !rotate && !merge && (
+            {patternEditMode && !toolBusy && (
               <>
                 <button
                   className="btn-secondary"
@@ -1417,6 +1746,82 @@ export default function Home() {
                 >
                   ⧉ Merge
                 </button>
+                <button
+                  className="btn-secondary"
+                  onClick={startSpecify}
+                  disabled={!canSpecify}
+                  title="Set a line's type (seam allowance) and merge marker"
+                >
+                  ✎ Specify line
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={startSmooth}
+                  disabled={!canSmooth}
+                  title="Replace consecutive outline lines by one smooth curve"
+                >
+                  〰 Smooth
+                </button>
+              </>
+            )}
+            {smooth && (
+              <>
+                <button
+                  className="btn-primary"
+                  onClick={commitSmooth}
+                  disabled={!smoothCurve}
+                  title={smoothCurve ? "Replace the selected lines by the previewed curve" : "Select ≥ 2 consecutive lines first"}
+                >
+                  Smooth now
+                </button>
+                <button className="btn-secondary" onClick={() => setSmooth(null)} title="Cancel smoothing">
+                  Abort smoothing
+                </button>
+              </>
+            )}
+            {specify && (
+              <>
+                {specify.sel && (
+                  <>
+                    <label className="specify-field">
+                      Line type
+                      <select
+                        value={specify.allowance}
+                        onChange={(e) =>
+                          setSpecify((s) => (s ? { ...s, allowance: e.target.value as AllowanceType } : s))
+                        }
+                      >
+                        {ALLOWANCE_TYPES.map((a) => (
+                          <option key={a} value={a}>
+                            {a} ({ALLOWANCE_MM[a] > 10 ? `${ALLOWANCE_MM[a] / 10} cm` : `${ALLOWANCE_MM[a]} mm`})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="specify-field">
+                      Merge marker
+                      <select
+                        value={specify.marker ?? ""}
+                        onChange={(e) =>
+                          setSpecify((s) =>
+                            s ? { ...s, marker: e.target.value === "" ? null : (e.target.value as MergeMarker) } : s
+                          )
+                        }
+                      >
+                        <option value="">— none —</option>
+                        {MERGE_MARKERS.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="btn-primary" onClick={applySpecify} title="Store this line specification">
+                      Apply
+                    </button>
+                  </>
+                )}
+                <button className="btn-secondary" onClick={() => setSpecify(null)} title="Leave line specification">
+                  Done
+                </button>
               </>
             )}
             {merge && (
@@ -1438,6 +1843,31 @@ export default function Home() {
             )}
             {cut && (
               <>
+                <span className="cut-mode-switch" role="group" aria-label="Cut sub-mode">
+                  <button
+                    className={cut.mode === "draw" ? "active" : ""}
+                    onClick={() => setCutMode("draw")}
+                    title="Draw the cut line (start/end snap to marks)"
+                  >
+                    ✂ Cut line
+                  </button>
+                  <button
+                    className={cut.mode === "measure" ? "active" : ""}
+                    onClick={() => setCutMode("measure")}
+                    title="Measure distances along the outline and mark points"
+                  >
+                    📏 Measure
+                  </button>
+                </span>
+                {cut.marks.length > 0 && (
+                  <button
+                    className="btn-secondary"
+                    onClick={clearCutMarks}
+                    title="Remove all temporary marks"
+                  >
+                    Clear marks ({cut.marks.length})
+                  </button>
+                )}
                 <button
                   className="btn-primary"
                   onClick={commitCut}
@@ -1464,6 +1894,14 @@ export default function Home() {
             >
               ↶ Undo
             </button>
+            <button
+              className="btn-secondary"
+              onClick={() => setPrintModalOpen(true)}
+              disabled={plotPieces.length === 0}
+              title={plotPieces.length === 0 ? "Load parts first" : "Print the pattern at 100 % scale to a PDF"}
+            >
+              🖨 Print to PDF
+            </button>
           </div>
           <div className="canvas-wrap">
             {loadedParts.length === 0 ? (
@@ -1487,8 +1925,13 @@ export default function Home() {
                         from: cut.from?.point ?? null,
                         to: cut.to?.point ?? null,
                         preview: cutPreview,
+                        controls: cutControls,
+                        mode: cut.mode,
+                        marks: cut.marks.map((m) => m.point),
+                        onAddMark: handleAddCutMark,
                         onPlace: handleCutPlace,
-                        onBow: handleCutBow,
+                        onMoveEnd: handleCutMoveEnd,
+                        onMoveControl: handleCutMoveControl,
                       }
                     : null
                 }
@@ -1503,7 +1946,16 @@ export default function Home() {
                       }
                     : null
                 }
-                merge={merge ? { segments: mergeOverlaySegs, onPick: handleMergePick } : null}
+                merge={
+                  merge
+                    ? { segments: mergeOverlaySegs, onPick: handleMergePick }
+                    : specify
+                    ? { segments: specifyOverlaySegs, onPick: handleSpecifyPick }
+                    : smooth
+                    ? { segments: smoothOverlaySegs, onPick: handleSmoothPick }
+                    : null
+                }
+                allowances={allowanceByPiece}
               />
             ) : (
               <div className="subtitle">Fix the part JSON to see the pattern.</div>

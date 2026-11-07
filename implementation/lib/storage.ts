@@ -41,6 +41,7 @@ export interface StoredState {
   bodyformSelections?: Record<string, string>;
   showAuxLines?: boolean;
   showPoints?: boolean;
+  showAllowance?: boolean;
 }
 
 const KEY = "cutavis";

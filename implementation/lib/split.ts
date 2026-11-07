@@ -14,6 +14,7 @@
 
 import { intersectBeziers } from "./geometry";
 import type { GeometryResult, ResolvedPoint } from "./geometry";
+import type { LineSpec } from "./types";
 
 export type Vec2 = { x: number; y: number };
 export type Bezier = [Vec2, Vec2, Vec2, Vec2];
@@ -60,7 +61,10 @@ export function bezierAt(b: Bezier, t: number): Vec2 {
 
 /** Parse an "M x y C x y x y x y" path (the only form geometry.ts emits) into a
  *  cubic Bézier. Returns null if the string doesn't hold at least 4 points. */
-export function parsePathBezier(d: string): Bezier | null {
+export function parsePathBezier(d: string | undefined): Bezier | null {
+  // `d` is undefined when an edit references a line the piece doesn't have
+  // (e.g. a stale anchor after piece numbering changed) — treat as "not found".
+  if (!d) return null;
   const nums = d.match(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g);
   if (!nums || nums.length < 8) return null;
   const f = nums.slice(0, 8).map(Number);
@@ -280,6 +284,85 @@ export function snapToBoundary(loop: BoundarySeg[], p: Vec2, samples = 200): Sna
   return best;
 }
 
+// ── Arc length along the outline (measure mode) ───────────────────────────────
+// Positions on a closed outline loop are expressed as an arc length s ∈ [0, total)
+// measured from the start of loop segment 0 in walk order. Each segment's length
+// is tabulated by dense chord sampling (error ≪ 0.1 mm at pattern scale).
+
+export interface ArcTable {
+  loop: BoundarySeg[];
+  /** Samples per segment. */
+  n: number;
+  /** Arc length at the start of each segment. */
+  segStart: number[];
+  /** cum[i][k] = arc length within segment i up to parameter k/n. */
+  cum: number[][];
+  total: number;
+}
+
+export function buildArcTable(loop: BoundarySeg[], n = 128): ArcTable {
+  const segStart: number[] = [];
+  const cum: number[][] = [];
+  let total = 0;
+  for (const s of loop) {
+    segStart.push(total);
+    const c = [0];
+    let prev = s.bezier[0];
+    for (let k = 1; k <= n; k++) {
+      const q = bezierAt(s.bezier, k / n);
+      c.push(c[k - 1] + Math.hypot(q.x - prev.x, q.y - prev.y));
+      prev = q;
+    }
+    cum.push(c);
+    total += c[n];
+  }
+  return { loop, n, segStart, cum, total };
+}
+
+/** Arc-length position of the point at parameter t on loop segment `segIndex`. */
+export function arcAt(tab: ArcTable, segIndex: number, t: number): number {
+  const c = tab.cum[segIndex];
+  const f = Math.max(0, Math.min(1, t)) * tab.n;
+  const k = Math.min(tab.n - 1, Math.floor(f));
+  return tab.segStart[segIndex] + c[k] + (c[k + 1] - c[k]) * (f - k);
+}
+
+/** The outline point at arc-length position s (wrapped around the loop). */
+export function pointAtArc(
+  tab: ArcTable,
+  s: number
+): { segIndex: number; t: number; point: Vec2; line: string } {
+  const L = tab.total;
+  let u = L > 0 ? ((s % L) + L) % L : 0;
+  let i = tab.segStart.length - 1;
+  while (i > 0 && tab.segStart[i] > u) i--;
+  u -= tab.segStart[i];
+  const c = tab.cum[i];
+  let k = 0;
+  while (k < tab.n - 1 && c[k + 1] < u) k++;
+  const span = c[k + 1] - c[k];
+  const t = (k + (span > 0 ? Math.max(0, Math.min(1, (u - c[k]) / span)) : 0)) / tab.n;
+  return { segIndex: i, t, point: bezierAt(tab.loop[i].bezier, t), line: tab.loop[i].line };
+}
+
+/** Shorter distance along the loop from s1 to s2, and its direction
+ *  (+1 = loop walk order, −1 = against it). */
+export function arcDistance(tab: ArcTable, s1: number, s2: number): { dist: number; dir: 1 | -1 } {
+  const L = tab.total;
+  const fwd = L > 0 ? (((s2 - s1) % L) + L) % L : 0;
+  return fwd <= L - fwd ? { dist: fwd, dir: 1 } : { dist: L - fwd, dir: -1 };
+}
+
+/** Polyline along the loop from s1, `dist` long in direction `dir` (for drawing
+ *  the measured stretch). */
+export function arcPolyline(tab: ArcTable, s1: number, dist: number, dir: 1 | -1, step?: number): Vec2[] {
+  const h = step ?? Math.max(tab.total / 600, 1e-6);
+  const steps = Math.max(1, Math.ceil(dist / h));
+  const pts: Vec2[] = [];
+  for (let k = 0; k <= steps; k++) pts.push(pointAtArc(tab, s1 + (dir * dist * k) / steps).point);
+  return pts;
+}
+
 // ── Partitioning the loop into two pieces along the cut ───────────────────────
 
 /** A cut endpoint anchored to a loop segment at Bézier parameter t. */
@@ -309,6 +392,33 @@ export interface SplitPieces {
   outer: BoundarySeg[];
   /** The cut curve, oriented from the earlier anchor to the later one. */
   cut: Bezier;
+}
+
+/** Control points of a straight cut (on the chord at 1/3 and 2/3). Used as the
+ *  starting position of the two control handles before the user drags them. */
+export const STRAIGHT_CUT_BOW: CutBow = { c1: [1 / 3, 0], c2: [2 / 3, 0] };
+
+/** Express an absolute control point P relative to the chord pA→pB as
+ *  [along, perp] — the inverse of the mapping used by buildCutBezier. */
+export function chordRelative(pA: Vec2, pB: Vec2, p: Vec2): [number, number] {
+  const vx = pB.x - pA.x;
+  const vy = pB.y - pA.y;
+  const len2 = vx * vx + vy * vy;
+  if (len2 === 0) return [0, 0];
+  const dx = p.x - pA.x;
+  const dy = p.y - pA.y;
+  // ctrl = pA + along·v + perp·|v|·n̂ with n̂ = (-vy, vx)/|v|, so both
+  // components come out as projections divided by |v|².
+  return [(dx * vx + dy * vy) / len2, (dx * -vy + dy * vx) / len2];
+}
+
+/** Drop a bow whose controls sit (almost) at the straight-cut positions, so a
+ *  straight cut is stored without a `bow` field. */
+export function normalizeCutBow(bow: CutBow | undefined): CutBow | undefined {
+  if (!bow) return undefined;
+  const near = (a: [number, number], b: [number, number]) =>
+    Math.abs(a[0] - b[0]) < 1e-3 && Math.abs(a[1] - b[1]) < 1e-3;
+  return near(bow.c1, STRAIGHT_CUT_BOW.c1) && near(bow.c2, STRAIGHT_CUT_BOW.c2) ? undefined : bow;
 }
 
 /** Build the cut Bézier between two points, optionally bowed (chord-relative). */
@@ -481,6 +591,7 @@ export function pieceToGeometry(piece: BoundarySeg[], source: GeometryResult): G
   const paths: Record<string, string> = {};
   const lineTypes: Record<string, string | undefined> = {};
   const points: Record<string, ResolvedPoint> = {};
+  const lineSpecs: Record<string, LineSpec> = {};
 
   const findName = (p: Vec2): string | null => {
     for (const [name, sp] of Object.entries(source.points)) {
@@ -508,6 +619,10 @@ export function pieceToGeometry(piece: BoundarySeg[], source: GeometryResult): G
     } else {
       const base = seg.line.split("~")[0];
       lineTypes[key] = source.lineTypes[base] ?? "seam";
+      // A fragment inherits its source line's specification (allowance type,
+      // merge marker); new cut edges get the default.
+      const spec = source.lineSpecs?.[base];
+      if (spec) lineSpecs[key] = spec;
     }
     for (const end of [seg.bezier[0], seg.bezier[3]]) {
       const name = findName(end);
@@ -528,6 +643,7 @@ export function pieceToGeometry(piece: BoundarySeg[], source: GeometryResult): G
     localValues: {},
     bbox: piece.length ? { minX, minY, maxX, maxY } : null,
     errors: {},
+    lineSpecs,
   };
 }
 
@@ -778,7 +894,7 @@ export interface SplitAnchor {
  * Apply a split to a resolved geometry: re-extract its outer boundary, locate
  * the two anchor lines by name, run the planar-arrangement cut, and build a
  * GeometryResult for each resulting piece. Pieces are tagged with stable
- * "A","B","C"… suffixes ordered by centroid (left-to-right, then top-to-bottom)
+ * "1","2","3"… suffixes ordered by centroid (left-to-right, then top-to-bottom)
  * so a given physical piece keeps its id across measurement changes. Returns
  * null when the split can't be applied (outline not closed, anchor line gone,
  * degenerate cut) so the caller can leave the piece intact.
@@ -814,7 +930,7 @@ export function splitGeometry(
   const eps = (g.bbox ? Math.hypot(g.bbox.maxX - g.bbox.minX, g.bbox.maxY - g.bbox.minY) || 1 : 1) * 1e-3;
   const built = res.pieces.map((pc) => ({ geometry: pieceToGeometry(pc, g), c: pieceCentroid(pc) }));
   built.sort((p, q) => (Math.abs(p.c.x - q.c.x) <= eps ? p.c.y - q.c.y : p.c.x - q.c.x));
-  return built.map((b, i) => ({ suffix: String.fromCharCode(65 + i), geometry: b.geometry }));
+  return built.map((b, i) => ({ suffix: String(i + 1), geometry: b.geometry }));
 }
 
 /** Resolve a boundary anchor (line + definition-relative t) to a coordinate on
@@ -1011,6 +1127,7 @@ export function mergeGeometryPair(
     points: { ...gA.points, ...gB.points },
     paths: { ...gA.paths, ...gB.paths },
     lineTypes: { ...gA.lineTypes, ...gB.lineTypes },
+    lineSpecs: { ...gA.lineSpecs, ...gB.lineSpecs },
     localValues: {},
     bbox: gA.bbox && gB.bbox
       ? {

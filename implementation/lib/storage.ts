@@ -44,6 +44,8 @@ export interface StoredState {
   showAllowance?: boolean;
   /** Edit-tools sidebar collapsed to icons. */
   editBarCollapsed?: boolean;
+  /** Tailor mode: Display section, edit tools and Inspector visible. */
+  tailorMode?: boolean;
 }
 
 const KEY = "cutavis";

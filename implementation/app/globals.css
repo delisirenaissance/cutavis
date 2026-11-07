@@ -1,10 +1,10 @@
 :root {
-  --bg: #0f1115;
-  --panel: #181b22;
+  --bg: #FFF6EA;
+  --panel: #FFF6EA;
   --border: #2a2f3a;
-  --text: #e6e8ec;
-  --muted: #9aa3b2;
-  --accent: #6ea8fe;
+  --text: #0f1115;
+  --muted: #495366;
+  --accent: #000000;
   --error: #ff6b6b;
 }
 
@@ -46,6 +46,392 @@ body {
     writing-mode: horizontal-tb !important;
     transform: none !important;
   }
+}
+
+/* ── Canvas page: header row + left panel + plot ─────── */
+
+.app.canvas-page {
+  grid-template-columns: 340px 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.canvas-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 2px 4px;
+  min-width: 0;
+}
+
+.canvas-header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.canvas-header .reload-err {
+  margin: 0;
+}
+
+@media (max-width: 860px) {
+  .app.canvas-page {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+  }
+}
+
+/* Collapsible sections of the left panel. */
+.left-panel {
+  gap: 8px;
+}
+
+.collapsible {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #FFF6EA;
+  flex-shrink: 0;
+}
+
+.collapsible-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.collapsible-head:hover {
+  background: rgba(110, 168, 254, 0.06);
+}
+
+.collapsible.open .collapsible-head {
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+}
+
+.collapsible-arrow {
+  width: 12px;
+  color: var(--muted);
+}
+
+.collapsible-hint {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.collapsible-body {
+  padding: 4px 12px 12px;
+}
+
+/* "Edit pattern" toggle stacked above the edit-tools bar (left of the canvas). */
+.edit-column {
+  flex: 0 0 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.edit-column.collapsed {
+  flex-basis: 46px;
+}
+
+/* Outside edit mode the column only holds the toggle button. */
+.edit-column.idle {
+  flex: 0 0 auto;
+}
+
+/* Inside the (vertical) column the bar fills the height; its width comes from
+   the column, so the bar's own horizontal flex-basis rules don't apply. */
+.edit-column .edit-bar,
+.edit-column .edit-bar.collapsed {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.edit-toggle {
+  background: var(--accent);
+  color: #0f1115;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.edit-toggle.active {
+  background: none;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+/* ── Start page: hero + pattern "products" ───────────── */
+
+.shop {
+  min-height: 100vh;
+}
+
+.shop-hero {
+  min-height: 50vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px 24px;
+  background: radial-gradient(ellipse at top, rgba(110, 168, 254, 0.16), transparent 70%), var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.shop-hero h1 {
+  font-size: clamp(20px, 6vw, 40px);
+  margin: 0 0 12px;
+  letter-spacing: 0.06em;
+}
+
+
+.shop-hero p {
+  font-size: 18px;
+  color: var(--muted);
+  max-width: 640px;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.shop-grid-wrap {
+  padding: 32px 24px 48px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.shop-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 24px;
+}
+
+.product-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.product-card:hover,
+.product-card:focus-visible {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  outline: none;
+}
+
+.product-card.current {
+  border-color: rgba(110, 168, 254, 0.6);
+}
+
+.product-carousel {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background: #fdfdfb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.product-carousel img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.product-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: #777;
+  font-size: 13px;
+  padding: 12px;
+  text-align: center;
+}
+
+.product-placeholder code {
+  font-size: 11px;
+  color: #999;
+}
+
+.product-slide-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(15, 17, 21, 0.72);
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.carousel-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(15, 17, 21, 0.6);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.carousel-btn:hover {
+  opacity: 1;
+  background: rgba(15, 17, 21, 0.85);
+}
+
+.carousel-btn.prev {
+  left: 8px;
+}
+
+.carousel-btn.next {
+  right: 8px;
+}
+
+.carousel-dots {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.carousel-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: rgba(15, 17, 21, 0.3);
+  cursor: pointer;
+}
+
+.carousel-dot.active {
+  background: var(--accent);
+}
+
+.product-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 14px 14px;
+}
+
+.product-info h3 {
+  margin: 0;
+  font-size: 16px;
+  flex: 1 1 auto;
+}
+
+.product-badge {
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+.product-open {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.product-card:hover .product-open {
+  color: var(--accent);
+}
+
+/* ── Tailor-mode switch (top of both pages) ──────────── */
+
+.tailor-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.canvas-header .tailor-switch {
+  margin-left: auto;
+}
+
+.shop-hero {
+  position: relative;
+}
+
+.shop-topbar {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+}
+
+.tailor-switch-track {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: #2a2f3a;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.tailor-switch-track.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.tailor-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+
+.tailor-switch-track.on .tailor-switch-knob {
+  transform: translateX(14px);
+}
+
+.edit-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 /* ── Vertical tab strip ──────────────────────────────── */
@@ -234,8 +620,7 @@ h1 {
 }
 
 h2 {
-  font-size: 13px;
-  text-transform: uppercase;
+  font-size: 25px;
   letter-spacing: 0.06em;
   color: var(--muted);
   margin: 20px 0 8px;
@@ -255,7 +640,7 @@ h2:first-child {
 
 .set-select {
   width: 100%;
-  background: #0f1115;
+  background: #ffffff;
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
@@ -305,7 +690,7 @@ h2:first-child {
 
 .field input {
   width: 80px;
-  background: #0f1115;
+  background: #ffffff;
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
@@ -315,7 +700,7 @@ h2:first-child {
 
 .field-set-select {
   width: 84px;
-  background: #0f1115;
+  background: #ffffff;
   border: 1px solid var(--border);
   color: var(--muted);
   border-radius: 6px;
@@ -1220,4 +1605,131 @@ svg {
 .errors-table td.v {
   color: var(--error);
   font-family: inherit;
+}
+
+/* ── Phones: canvas full width, edit tools as a bottom icon bar ───────── */
+
+@media (max-width: 700px) {
+  .app.canvas-page {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    height: auto;
+    padding: 8px;
+    /* room for the fixed edit bar at the bottom */
+    padding-bottom: 72px;
+  }
+
+  .canvas-header {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    order: 0;
+  }
+
+  /* Canvas first, full width; the settings panel below it. */
+  .app.canvas-page .plot-panel {
+    order: 1;
+    flex-direction: column;
+    min-height: 72vh;
+    padding: 8px;
+  }
+
+  .app.canvas-page .left-panel {
+    order: 2;
+  }
+
+  .plot-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .inspector {
+    flex-basis: auto;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 8px;
+  }
+
+  /* The edit column becomes a fixed icon bar along the bottom of the page. */
+  .edit-column,
+  .edit-column.idle,
+  .edit-column.collapsed {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.35);
+  }
+
+  .edit-column .edit-bar,
+  .edit-column .edit-bar.collapsed {
+    flex: 1 1 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+    padding: 0;
+    border: none;
+    background: none;
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+
+  /* Icons only — the names are the buttons' tooltips. */
+  .edit-tool-label,
+  .edit-toggle-label,
+  .edit-bar-toggle {
+    display: none;
+  }
+
+  .edit-tool,
+  .edit-bar.collapsed .edit-tool {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 8px 9px;
+    justify-content: center;
+  }
+
+  .edit-tool-icon {
+    font-size: 18px;
+  }
+
+  .edit-toggle {
+    flex: 0 0 auto;
+    padding: 9px 12px;
+    font-size: 16px;
+  }
+
+  .edit-bar-sep {
+    width: 1px;
+    height: 26px;
+    margin: 0 4px;
+    flex-shrink: 0;
+  }
+
+  /* The active tool's controls open as a sheet above the bottom bar. */
+  .edit-options {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 56px;
+    z-index: 49;
+    max-height: 45vh;
+    overflow-y: auto;
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.3);
+  }
+
+  .shop-topbar {
+    top: 10px;
+    right: 12px;
+  }
 }

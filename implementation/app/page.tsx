@@ -69,6 +69,9 @@ import {
 import { PatternSvg } from "@/components/PatternSvg";
 import { SaveModal } from "@/components/SaveModal";
 import { PrintModal } from "@/components/PrintModal";
+import { PatternShop } from "@/components/PatternShop";
+import { Collapsible } from "@/components/Collapsible";
+import { TailorSwitch } from "@/components/TailorSwitch";
 import { buildPatternPdf, type PrintSettings } from "@/lib/pdf";
 import { AddPartModal } from "@/components/AddPartModal";
 import InspectorPanel from "@/components/InspectorPanel";
@@ -93,7 +96,6 @@ function isUsablePartText(text: string | undefined): boolean {
   }
 }
 
-type Tab = "pattern" | "measurements" | "display";
 type VariableSets = Record<string, string>;
 
 const DEFAULT_SET = MEASUREMENT_SET_NAMES[0];
@@ -106,7 +108,14 @@ function defaultVariableSets(): VariableSets {
 export default function Home() {
   // All state starts with sensible defaults (safe for SSR).
   // The mount effect below immediately overwrites them from localStorage.
-  const [activeTab, setActiveTab] = useState<Tab>("measurements");
+  // Which page is shown: the start page (pattern "shop") or the canvas page.
+  // Synced with the URL hash ("#/pattern/<name>"), so Back returns to the start
+  // page and a reload stays on the pattern.
+  const [view, setView] = useState<"shop" | "canvas">("shop");
+  // Collapsible sections of the canvas page's left panel (collapsed by default).
+  const [measurementsOpen, setMeasurementsOpen] = useState(false);
+  const [displayOpen, setDisplayOpen] = useState(false);
+  const [defineSectionOpen, setDefineSectionOpen] = useState(false);
   // The parts currently loaded onto the plot. The editor shows one at a time
   // (activePartFile); every loaded part is rendered on the shared plot.
   const [loadedParts, setLoadedParts] = useState<LoadedPart[]>([]);
@@ -139,6 +148,9 @@ export default function Home() {
   const [showPoints, setShowPoints] = useState(true);
   const [showAllowance, setShowAllowance] = useState(true);
   const [editBarCollapsed, setEditBarCollapsed] = useState(false);
+  // "Tailor mode" (switch at the top of the page, default off): only then are
+  // the Display section, the edit-pattern tools and the Inspector shown.
+  const [tailorMode, setTailorMode] = useState(false);
 
   // Ephemeral UI state — not persisted
   const [partFiles, setPartFiles] = useState<string[]>([]);
@@ -223,7 +235,6 @@ export default function Home() {
     // Overrides carry new values that were just computed in the same handler
     // (since setState is asynchronous and the closure still holds old values).
     saveState({
-      activeTab,
       loadedParts,
       activePartFile,
       edits,
@@ -236,6 +247,7 @@ export default function Home() {
       showPoints,
       showAllowance,
       editBarCollapsed,
+      tailorMode,
       ...overrides,
     });
   }
@@ -258,15 +270,6 @@ export default function Home() {
     // Restore persisted state
     const stored = loadState();
 
-    if (stored.activeTab) {
-      // The old standalone "Edit Pattern" tab is now the Pattern tab's edit-mode.
-      if (stored.activeTab === "edit-part") {
-        setActiveTab("pattern");
-        setPatternEditMode(true);
-      } else {
-        setActiveTab(stored.activeTab);
-      }
-    }
     if (stored.edits)                      setEdits(migrateEdits(stored.edits));
     if (stored.currentPatternName) {
       setCurrentPatternName(stored.currentPatternName);
@@ -279,6 +282,7 @@ export default function Home() {
     if (stored.showPoints   !== undefined) setShowPoints(stored.showPoints);
     if (stored.showAllowance !== undefined) setShowAllowance(stored.showAllowance);
     if (stored.editBarCollapsed !== undefined) setEditBarCollapsed(stored.editBarCollapsed);
+    if (stored.tailorMode !== undefined) setTailorMode(stored.tailorMode);
 
     // ── Restore the loaded parts ────────────────────────────────────────────
     // Prefer the new multi-part storage; otherwise migrate the old single-part
@@ -469,6 +473,14 @@ export default function Home() {
   useEffect(() => {
     if (toolBusy) setEditBarCollapsed(false);
   }, [toolBusy]);
+
+  // Switching tailor mode off also leaves edit mode (its tools disappear).
+  function toggleTailorMode() {
+    const next = !tailorMode;
+    setTailorMode(next);
+    if (!next && patternEditMode) exitPatternEdit();
+    persist({ tailorMode: next });
+  }
 
   function toggleEditBar() {
     const next = !editBarCollapsed;
@@ -750,16 +762,12 @@ export default function Home() {
 
   // ── Event handlers (each calls persist() with the new values) ─────────────
 
-  function handleTabChange(tab: Tab) {
-    setActiveTab(tab);
-    persist({ activeTab: tab });
-  }
-
   // Enter the Pattern tab's edit-mode (shows the JSON editor + part dropdown).
   // Clear the blue name-highlight, which is a non-edit-mode affordance.
   function enterPatternEdit() {
     setPatternEditMode(true);
     setHighlightedPart(null);
+    setDefineSectionOpen(false); // "Define pattern" starts collapsed in edit mode
   }
 
   function exitPatternEdit() {
@@ -1423,6 +1431,62 @@ export default function Home() {
 
   // Load a saved pattern: fetch each referenced part fresh from disk and replay
   // the stored edit history. Replaces whatever is currently loaded.
+  // ── Start page ↔ canvas page navigation ───────────────────────────────────
+
+  const patternFromHash = (): string | null => {
+    const m = window.location.hash.match(/^#\/pattern\/(.+)$/);
+    return m ? decodeURIComponent(m[1]) : null;
+  };
+
+  // Open a pattern from its product card. Re-opening the pattern that is
+  // already loaded keeps its (possibly unsaved) state; switching to another
+  // pattern asks first if there are unsaved changes.
+  async function openPattern(name: string) {
+    if (name !== currentPatternName) {
+      if (
+        patternDirty &&
+        !window.confirm(`“${currentPatternName || "The current pattern"}” has unsaved changes that will be lost. Open “${name}” anyway?`)
+      ) {
+        return;
+      }
+      await handleLoadPattern(name);
+    }
+    const hash = `#/pattern/${encodeURIComponent(name)}`;
+    if (window.location.hash !== hash) window.location.hash = hash; // → hashchange → canvas
+    else setView("canvas");
+  }
+
+  function backToShop() {
+    if (window.location.hash) {
+      // Push a clean URL (keeps Back/Forward working) and show the start page.
+      history.pushState(null, "", window.location.pathname + window.location.search);
+    }
+    setView("shop");
+  }
+
+  // Follow the URL hash: "#/pattern/<name>" shows that pattern's canvas page
+  // (loading it if it isn't the stored one), anything else the start page.
+  useEffect(() => {
+    const sync = () => {
+      const name = patternFromHash();
+      if (!name) {
+        setView("shop");
+        return;
+      }
+      // The stored state (restored on mount) may already hold this pattern.
+      if (loadState().currentPatternName !== name) void handleLoadPattern(name);
+      setView("canvas");
+    };
+    sync();
+    window.addEventListener("hashchange", sync);
+    window.addEventListener("popstate", sync);
+    return () => {
+      window.removeEventListener("hashchange", sync);
+      window.removeEventListener("popstate", sync);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function handleLoadPattern(name: string) {
     if (!name) return;
     let pattern: { parts?: string[]; edits?: PatternEdit[] };
@@ -1490,119 +1554,335 @@ export default function Home() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // ── Start page ──
+  if (view === "shop") {
+    return (
+      <PatternShop
+        patterns={patternFiles}
+        currentPattern={currentPatternName}
+        currentDirty={patternDirty}
+        onOpen={openPattern}
+        status={patternStatus && !patternStatus.ok ? patternStatus.msg : null}
+        tailorSwitch={<TailorSwitch on={tailorMode} onToggle={toggleTailorMode} />}
+      />
+    );
+  }
+
+  // ── Canvas page ──
   return (
-    <main className="app">
-      <nav className="tab-strip">
-        <button
-          className={`tab-btn${activeTab === "measurements" ? " active" : ""}`}
-          onClick={() => handleTabChange("measurements")}
-          title="Measurements"
-        >
-          <span>Measurements</span>
+    <main className="app canvas-page">
+      <header className="canvas-header">
+        <button className="btn-secondary" onClick={backToShop} title="Back to all patterns">
+          ← All patterns
         </button>
-        <button
-          className={`tab-btn${activeTab === "display" ? " active" : ""}`}
-          onClick={() => handleTabChange("display")}
-          title="Display"
-        >
-          <span>Display</span>
-        </button>
-        <button
-          className={`tab-btn${activeTab === "pattern" ? " active" : ""}`}
-          onClick={() => handleTabChange("pattern")}
-          title="Pattern"
-        >
-          <span>Pattern</span>
-        </button>
-      </nav>
+        <h1>{currentPatternName || "Untitled pattern"}</h1>
+        <span className="checkbox-note">
+          {edits.length} edit{edits.length === 1 ? "" : "s"} in history
+          {currentPatternName && <> · {patternDirty ? "unsaved changes" : "saved"}</>}
+        </span>
+        {patternStatus && !patternStatus.ok && <span className="reload-err">{patternStatus.msg}</span>}
+        <TailorSwitch on={tailorMode} onToggle={toggleTailorMode} />
+      </header>
 
       <section className="panel left-panel">
-
-        {activeTab === "measurements" && (
-          <>
-            <h1>cutavis · pattern prototype</h1>
-            <p className="subtitle">
-              Measurement formulas are evaluated with a safe math parser and drawn as SVG.
-            </p>
-
-            <h2>Measurement set</h2>
-            <select
-              className="set-select"
-              value={selectedSet}
-              onChange={(e) => handleSetChange(e.target.value)}
-            >
-              {measurementSetNames.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
-
-            <h2>Measurements</h2>
-            {measurementVariableNames.map((name) => (
-              <div className="field" key={name}>
-                <label htmlFor={`m-${name}`}>{name}</label>
-                <input
-                  id={`m-${name}`}
-                  type="number"
-                  value={measurements[name] ?? 0}
-                  onChange={(e) => handleMeasurementChange(name, Number(e.target.value))}
-                />
+        <Collapsible
+          title="Measurements"
+          open={measurementsOpen}
+          onToggle={() => setMeasurementsOpen((o) => !o)}
+          hint={selectedSet}
+        >
+                <h2>Measurement set</h2>
                 <select
-                  className="field-set-select"
-                  value={variableSets[name] ?? selectedSet}
-                  onChange={(e) => handleVariableSetChange(name, e.target.value)}
-                  title={`Load ${name} from set`}
+                  className="set-select"
+                  value={selectedSet}
+                  onChange={(e) => handleSetChange(e.target.value)}
                 >
-                  {measurementSetNames.map((setName) => (
-                    <option key={setName} value={setName}>{setName}</option>
+                  {measurementSetNames.map((name) => (
+                    <option key={name} value={name}>{name}</option>
                   ))}
                 </select>
-              </div>
-            ))}
 
-            <h2>Body form</h2>
-            {bodyformVariableNames.map((name) => (
-              <div className="field" key={name}>
-                <label htmlFor={`bf-${name}`}>{name}</label>
-                <select
-                  id={`bf-${name}`}
-                  className="bodyform-select"
-                  value={bodyformSelections[name] ?? bodyformVariables[name][0]?.text ?? ""}
-                  onChange={(e) => handleBodyformChange(name, e.target.value)}
-                  title={`Select ${name}`}
+                <h2>Measurements</h2>
+                <table width="100%">
+                {measurementVariableNames.map((name) => (
+                  <tr>
+                  <td className="field" key={name}>
+                    <label htmlFor={`m-${name}`}>{name}</label>
+                  </td>
+                  <td>
+                    <input
+                      id={`m-${name}`}
+                      type="number"
+                      value={measurements[name] ?? 0}
+                      onChange={(e) => handleMeasurementChange(name, Number(e.target.value))}
+                    />
+                  </td>
+                  <td>
+                    <select
+                      className="field-set-select"
+                      value={variableSets[name] ?? selectedSet}
+                      onChange={(e) => handleVariableSetChange(name, e.target.value)}
+                      title={`Load ${name} from set`}
+                    >
+                      {measurementSetNames.map((setName) => (
+                        <option key={setName} value={setName}>{setName}</option>
+                      ))}
+                    </select>
+                  </td>
+                  </tr>
+                ))}
+                </table>
+
+                <h2>Body form</h2>
+                {bodyformVariableNames.map((name) => (
+                  <div className="field" key={name}>
+                    <label htmlFor={`bf-${name}`}>{name}</label>
+                    <select
+                      id={`bf-${name}`}
+                      className="bodyform-select"
+                      value={bodyformSelections[name] ?? bodyformVariables[name][0]?.text ?? ""}
+                      onChange={(e) => handleBodyformChange(name, e.target.value)}
+                      title={`Select ${name}`}
+                    >
+                      {bodyformVariables[name].map((opt) => (
+                        <option key={opt.text} value={opt.text}>{opt.text}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+
+                {formulaErrors.length > 0 && (
+                  <div className="errors">
+                    Formula problems:
+                    <ul>
+                      {formulaErrors.map(([key, msg]) => (
+                        <li key={key}><code>{key}</code>: {msg}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="reload-csv">
+                  <button className="btn-secondary" onClick={handleReloadCsv}>
+                    Reload from CSV files
+                  </button>
+                  <p className="checkbox-note">
+                    Re-reads measurement_variables.csv and bodyform_variables.csv from disk and
+                    updates the fields and dropdowns above.
+                  </p>
+                  {reloadStatus && (
+                    <p className={reloadStatus.ok ? "reload-ok" : "reload-err"}>
+                      {reloadStatus.msg}
+                    </p>
+                  )}
+                </div>
+        </Collapsible>
+
+        {tailorMode && (
+          <Collapsible title="Display" open={displayOpen} onToggle={() => setDisplayOpen((o) => !o)}>
+                <div className="display-settings">
+
+                  <h2>Lines</h2>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={showAuxLines}
+                      onChange={(e) => handleShowAuxLinesChange(e.target.checked)}
+                    />
+                    Show aux lines
+                  </label>
+
+                  <h2>Points</h2>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={showPoints}
+                      onChange={(e) => handleShowPointsChange(e.target.checked)}
+                    />
+                    Show points
+                    <span className="checkbox-note">(marker points are always visible)</span>
+                  </label>
+
+                  <h2>Seam allowance</h2>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={showAllowance}
+                      onChange={(e) => handleShowAllowanceChange(e.target.checked)}
+                    />
+                    Show seam allowance
+                    <span className="checkbox-note">
+                      (on the plot and in the PDF; seam 10 mm, mini-allowance-hem 7 mm, maxi-allowance-hem 4 cm, fold none — set per line with “Specify line”)
+                    </span>
+                  </label>
+                </div>
+          </Collapsible>
+        )}
+
+        {patternEditMode && (
+          <Collapsible
+            title="Define pattern"
+            open={defineSectionOpen}
+            onToggle={() => setDefineSectionOpen((o) => !o)}
+            hint={`${loadedParts.length} part${loadedParts.length === 1 ? "" : "s"}`}
+          >
+            <div className="pattern-tab edit-part-wrap">
+
+                <h2>Parts in this pattern:</h2>
+                {loadedParts.length === 0 ? (
+                  <p className="subtitle">No parts loaded. Add a part to start editing.</p>
+                ) : (
+                  <div className="field">
+                    <label htmlFor="edit-part-select">Editing part</label>
+                    <select
+                      id="edit-part-select"
+                      className="set-select"
+                      value={activePartFile}
+                      onChange={(e) => handleSelectPart(e.target.value)}
+                    >
+                      {loadedParts.map((p) => {
+                        const dirty = p.text !== p.savedText;
+                        return (
+                          <option key={p.file} value={p.file}>
+                            {p.file}
+                            {dirty ? " ●" : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    {activePartFile !== "" && (
+                      <button
+                        className="loaded-part-remove"
+                        onClick={() => handleRemovePart(activePartFile)}
+                        title={`Remove ${activePartFile} from the plot`}
+                        aria-label={`Remove ${activePartFile}`}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                )}
+                {activePartFile !== "" && derivedPartsByFile[activePartFile]?.length > 0 && (
+                  <div className="field">
+                    <label>Derived parts of {activePartFile} (click to select)</label>
+                    <ul className="pattern-part-list">
+                      {derivedPartsByFile[activePartFile].map((id) => (
+                        <li key={id}>
+                          <button
+                            className={`pattern-part-name${
+                              id === selectedPlotPart ? " highlighted" : ""
+                            }`}
+                            onClick={() => handlePlotSelect(id === selectedPlotPart ? null : id)}
+                            title="Select this part on the plot (move, rotate, cut, merge)"
+                          >
+                            {id}
+                            {pieceNames[id] && <span className="piece-display-name"> — {pieceNames[id]}</span>}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <button
+                  className="btn-add-part"
+                  onClick={() => setAddModalOpen(true)}
+                  title="Add a part to the plot"
                 >
-                  {bodyformVariables[name].map((opt) => (
-                    <option key={opt.text} value={opt.text}>{opt.text}</option>
-                  ))}
-                </select>
-              </div>
-            ))}
+                  + Add part
+                </button>
 
-            {formulaErrors.length > 0 && (
-              <div className="errors">
-                Formula problems:
-                <ul>
-                  {formulaErrors.map(([key, msg]) => (
-                    <li key={key}><code>{key}</code>: {msg}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+                {activePartFile === "" ? (
+                  <p className="subtitle" style={{ marginTop: 16 }}>
+                    Add a part to start editing.
+                  </p>
+                ) : (
+                  <>
+                    {activePart &&
+                      Object.keys(activePart.part_specific_user_definable_variables ?? {}).length > 0 && (
+                        <div className="customize-section">
+                          <h2>Customize</h2>
+                          {Object.entries(activePart.part_specific_user_definable_variables!).map(
+                            ([name, value]) => (
+                              <div className="field" key={name}>
+                                <label htmlFor={`psv-${name}`}>
+                                  {name}
+                                  {varPartCounts[name] > 1 && (
+                                    <span
+                                      className="shared-var-badge"
+                                      title={`Shared by ${varPartCounts[name]} loaded parts — editing updates all of them`}
+                                    >
+                                      shared ×{varPartCounts[name]}
+                                    </span>
+                                  )}
+                                </label>
+                                <input
+                                  id={`psv-${name}`}
+                                  type="number"
+                                  value={value}
+                                  onChange={(e) =>
+                                    handlePartVariableChange(name, Number(e.target.value))
+                                  }
+                                />
+                              </div>
+                            )
+                          )}
+                        </div>
+                      )}
 
-            <div className="reload-csv">
-              <button className="btn-secondary" onClick={handleReloadCsv}>
-                Reload from CSV files
-              </button>
-              <p className="checkbox-note">
-                Re-reads measurement_variables.csv and bodyform_variables.csv from disk and
-                updates the fields and dropdowns above.
-              </p>
-              {reloadStatus && (
-                <p className={reloadStatus.ok ? "reload-ok" : "reload-err"}>
-                  {reloadStatus.msg}
+                    <h2>Part Definition (JSON) — {activePartFile}</h2>
+                    <textarea
+                      className={`json-editor${activeParseError ? " invalid" : ""}`}
+                      value={activeText}
+                      spellCheck={false}
+                      onChange={(e) => handlePartTextChange(e.target.value)}
+                    />
+                    {activeParseError && (
+                      <div className="errors">
+                        Invalid JSON: <code>{activeParseError}</code>
+                      </div>
+                    )}
+
+                    <div className="edit-part-actions">
+                      <button
+                        className="btn-primary"
+                        onClick={() => setSaveModalOpen(true)}
+                        disabled={!isDirty}
+                        title={isDirty ? "Save changes" : "No unsaved changes"}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                <hr className="edit-divider" />
+
+                <p className="checkbox-note">
+                  {edits.length} edit{edits.length === 1 ? "" : "s"} in history
+                  {currentPatternName && (
+                    <>
+                      {" · "}
+                      {patternDirty ? "unsaved changes" : `saved as “${currentPatternName}”`}
+                    </>
+                  )}
                 </p>
-              )}
+
+                <div className="edit-part-actions">
+                  <button
+                    className="btn-primary"
+                    onClick={() => setSavePatternModalOpen(true)}
+                    disabled={loadedParts.length === 0}
+                    title={loadedParts.length === 0 ? "Load parts first" : "Save this pattern"}
+                  >
+                    Save pattern
+                  </button>
+                </div>
+
+                {patternStatus && !patternStatus.ok && (
+                  <p className="reload-err">{patternStatus.msg}</p>
+                )}
             </div>
-          </>
+          </Collapsible>
         )}
 
         {saveModalOpen && (
@@ -1631,301 +1911,6 @@ export default function Home() {
             onAdd={handleAddPart}
             onClose={() => setAddModalOpen(false)}
           />
-        )}
-
-        {activeTab === "display" && (
-          <div className="display-settings">
-            <h1>Display</h1>
-            <p className="subtitle">Control which elements are shown in the plot.</p>
-
-            <h2>Lines</h2>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={showAuxLines}
-                onChange={(e) => handleShowAuxLinesChange(e.target.checked)}
-              />
-              Show aux lines
-            </label>
-
-            <h2>Points</h2>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={showPoints}
-                onChange={(e) => handleShowPointsChange(e.target.checked)}
-              />
-              Show points
-              <span className="checkbox-note">(marker points are always visible)</span>
-            </label>
-
-            <h2>Seam allowance</h2>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={showAllowance}
-                onChange={(e) => handleShowAllowanceChange(e.target.checked)}
-              />
-              Show seam allowance
-              <span className="checkbox-note">
-                (on the plot and in the PDF; seam 10 mm, mini-allowance-hem 7 mm, maxi-allowance-hem 4 cm, fold none — set per line with “Specify line”)
-              </span>
-            </label>
-          </div>
-        )}
-
-        {activeTab === "pattern" && !patternEditMode && (
-          <div className="pattern-tab">
-            <h1>Pattern</h1>
-            <p className="subtitle">
-              A pattern is a set of parts loaded together plus the edits applied to them.
-            </p>
-
-            <h2>Load pattern</h2>
-            <select
-              className="set-select"
-              value={currentPatternName}
-              onChange={(e) => handleLoadPattern(e.target.value)}
-            >
-              <option value="">— select a pattern —</option>
-              {patternFiles.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
-
-            <h2>Parts in this pattern:</h2>
-            {loadedParts.length === 0 ? (
-              <p className="subtitle">No parts loaded yet. Use “Edit pattern” to add parts.</p>
-            ) : (
-              <ul className="pattern-part-list">
-                {loadedParts.map((p) => (
-                  <li key={p.file}>
-                    <button
-                      className={`pattern-part-name${
-                        p.file === highlightedPart ? " highlighted" : ""
-                      }`}
-                      onClick={() => handleHighlightPart(p.file)}
-                      title="Highlight this part's lines on the plot"
-                    >
-                      {p.file}
-                      {pieceNames[p.file] && <span className="piece-display-name"> — {pieceNames[p.file]}</span>}
-                    </button>
-                    {derivedPartsByFile[p.file]?.length > 0 && (
-                      <ul className="derived-part-list">
-                        {derivedPartsByFile[p.file].map((id) => (
-                          <li key={id}>
-                            <button
-                              className={`pattern-part-name${
-                                id === highlightedPart ? " highlighted" : ""
-                              }`}
-                              onClick={() => handleHighlightPart(id)}
-                              title="Highlight this derived part on the plot"
-                            >
-                              {id}
-                              {pieceNames[id] && <span className="piece-display-name"> — {pieceNames[id]}</span>}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <div className="edit-part-actions">
-              <button
-                className="btn-secondary"
-                onClick={enterPatternEdit}
-                title="Edit the parts and JSON of this pattern"
-              >
-                Edit pattern
-              </button>
-            </div>
-
-            <p className="checkbox-note">
-              {edits.length} edit{edits.length === 1 ? "" : "s"} in history
-              {currentPatternName && (
-                <>
-                  {" · "}
-                  {patternDirty ? "unsaved changes" : `saved as “${currentPatternName}”`}
-                </>
-              )}
-            </p>
-
-            {patternStatus && !patternStatus.ok && (
-              <p className="reload-err">{patternStatus.msg}</p>
-            )}
-          </div>
-        )}
-
-        {activeTab === "pattern" && patternEditMode && (
-          <div className="pattern-tab edit-part-wrap">
-            <div className="pattern-edit-head">
-              <h1>Pattern · edit</h1>
-              <button
-                className="btn-secondary"
-                onClick={exitPatternEdit}
-                title="Return to the pattern overview"
-              >
-                ← Done
-              </button>
-            </div>
-
-            <h2>Parts in this pattern:</h2>
-            {loadedParts.length === 0 ? (
-              <p className="subtitle">No parts loaded. Add a part to start editing.</p>
-            ) : (
-              <div className="field">
-                <label htmlFor="edit-part-select">Editing part</label>
-                <select
-                  id="edit-part-select"
-                  className="set-select"
-                  value={activePartFile}
-                  onChange={(e) => handleSelectPart(e.target.value)}
-                >
-                  {loadedParts.map((p) => {
-                    const dirty = p.text !== p.savedText;
-                    return (
-                      <option key={p.file} value={p.file}>
-                        {p.file}
-                        {dirty ? " ●" : ""}
-                      </option>
-                    );
-                  })}
-                </select>
-                {activePartFile !== "" && (
-                  <button
-                    className="loaded-part-remove"
-                    onClick={() => handleRemovePart(activePartFile)}
-                    title={`Remove ${activePartFile} from the plot`}
-                    aria-label={`Remove ${activePartFile}`}
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            )}
-            {activePartFile !== "" && derivedPartsByFile[activePartFile]?.length > 0 && (
-              <div className="field">
-                <label>Derived parts of {activePartFile} (click to select)</label>
-                <ul className="pattern-part-list">
-                  {derivedPartsByFile[activePartFile].map((id) => (
-                    <li key={id}>
-                      <button
-                        className={`pattern-part-name${
-                          id === selectedPlotPart ? " highlighted" : ""
-                        }`}
-                        onClick={() => handlePlotSelect(id === selectedPlotPart ? null : id)}
-                        title="Select this part on the plot (move, rotate, cut, merge)"
-                      >
-                        {id}
-                        {pieceNames[id] && <span className="piece-display-name"> — {pieceNames[id]}</span>}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <button
-              className="btn-add-part"
-              onClick={() => setAddModalOpen(true)}
-              title="Add a part to the plot"
-            >
-              + Add part
-            </button>
-
-            {activePartFile === "" ? (
-              <p className="subtitle" style={{ marginTop: 16 }}>
-                Add a part to start editing.
-              </p>
-            ) : (
-              <>
-                {activePart &&
-                  Object.keys(activePart.part_specific_user_definable_variables ?? {}).length > 0 && (
-                    <div className="customize-section">
-                      <h2>Customize</h2>
-                      {Object.entries(activePart.part_specific_user_definable_variables!).map(
-                        ([name, value]) => (
-                          <div className="field" key={name}>
-                            <label htmlFor={`psv-${name}`}>
-                              {name}
-                              {varPartCounts[name] > 1 && (
-                                <span
-                                  className="shared-var-badge"
-                                  title={`Shared by ${varPartCounts[name]} loaded parts — editing updates all of them`}
-                                >
-                                  shared ×{varPartCounts[name]}
-                                </span>
-                              )}
-                            </label>
-                            <input
-                              id={`psv-${name}`}
-                              type="number"
-                              value={value}
-                              onChange={(e) =>
-                                handlePartVariableChange(name, Number(e.target.value))
-                              }
-                            />
-                          </div>
-                        )
-                      )}
-                    </div>
-                  )}
-
-                <h2>Part Definition (JSON) — {activePartFile}</h2>
-                <textarea
-                  className={`json-editor${activeParseError ? " invalid" : ""}`}
-                  value={activeText}
-                  spellCheck={false}
-                  onChange={(e) => handlePartTextChange(e.target.value)}
-                />
-                {activeParseError && (
-                  <div className="errors">
-                    Invalid JSON: <code>{activeParseError}</code>
-                  </div>
-                )}
-
-                <div className="edit-part-actions">
-                  <button
-                    className="btn-primary"
-                    onClick={() => setSaveModalOpen(true)}
-                    disabled={!isDirty}
-                    title={isDirty ? "Save changes" : "No unsaved changes"}
-                  >
-                    Save
-                  </button>
-                </div>
-              </>
-            )}
-
-            <hr className="edit-divider" />
-
-            <p className="checkbox-note">
-              {edits.length} edit{edits.length === 1 ? "" : "s"} in history
-              {currentPatternName && (
-                <>
-                  {" · "}
-                  {patternDirty ? "unsaved changes" : `saved as “${currentPatternName}”`}
-                </>
-              )}
-            </p>
-
-            <div className="edit-part-actions">
-              <button
-                className="btn-primary"
-                onClick={() => setSavePatternModalOpen(true)}
-                disabled={loadedParts.length === 0}
-                title={loadedParts.length === 0 ? "Load parts first" : "Save this pattern"}
-              >
-                Save pattern
-              </button>
-            </div>
-
-            {patternStatus && !patternStatus.ok && (
-              <p className="reload-err">{patternStatus.msg}</p>
-            )}
-          </div>
         )}
 
         {savePatternModalOpen && (
@@ -1960,7 +1945,9 @@ export default function Home() {
                 ? `Selected: ${pieceLabel(selectedPiece)}${selectedPiece.name ? ` (${selectedPiece.id})` : ""} — drag on the plot to move it`
                 : patternEditMode
                 ? "Click a part on the plot to select it"
-                : "Enter edit mode to modify the pattern"}
+                : tailorMode
+                ? "Click “Edit pattern” to modify the pattern"
+                : ""}
             </span>
             <button
               className="btn-secondary"
@@ -2059,256 +2046,272 @@ export default function Home() {
             </div>
           )}
           <div className="plot-body">
-            {patternEditMode && (
-              <aside className={`edit-bar${editBarCollapsed ? " collapsed" : ""}`} aria-label="Edit tools">
+            {/* "Edit pattern" toggle above the collapsible edit-tools bar (tailor mode only). */}
+            {tailorMode && (
+              <div className={`edit-column${!patternEditMode ? " idle" : editBarCollapsed ? " collapsed" : ""}`}>
                 <button
-                  className="edit-bar-toggle"
-                  onClick={toggleEditBar}
-                  title={editBarCollapsed ? "Expand the edit tools" : "Collapse the edit tools"}
-                  aria-expanded={!editBarCollapsed}
+                  className={`edit-toggle${patternEditMode ? " active" : ""}`}
+                  onClick={patternEditMode ? exitPatternEdit : enterPatternEdit}
+                  title={patternEditMode ? "Leave edit mode" : "Edit the parts and edits of this pattern"}
                 >
-                  {editBarCollapsed ? "»" : "« Edit tools"}
+                  <span aria-hidden>{patternEditMode ? "✓" : "✎"}</span>
+                  {!(patternEditMode && editBarCollapsed) && (
+                    <span className="edit-toggle-label">{patternEditMode ? "Done editing" : "Edit pattern"}</span>
+                  )}
                 </button>
-                {editTools.map((t) => (
-                  <button
-                    key={t.key}
-                    className={`edit-tool${t.active ? " active" : ""}${t.danger ? " danger" : ""}`}
-                    onClick={t.onClick}
-                    disabled={!t.enabled && !t.active}
-                    title={t.title}
-                  >
-                    <span className="edit-tool-icon" aria-hidden>{t.icon}</span>
-                    {!editBarCollapsed && <span className="edit-tool-label">{t.label}</span>}
-                  </button>
-                ))}
-                <div className="edit-bar-sep" />
-                <button
-                  className="edit-tool"
-                  onClick={handleUndo}
-                  disabled={edits.length === 0}
-                  title={edits.length === 0 ? "Nothing to undo" : "Undo last edit"}
-                >
-                  <span className="edit-tool-icon" aria-hidden>↶</span>
-                  {!editBarCollapsed && <span className="edit-tool-label">Undo</span>}
-                </button>
-                {/* Controls of the active tool, stacked vertically. */}
-                {!editBarCollapsed && toolBusy && (
-                  <div className="edit-options">
-                    {define && (
-                      <>
-                        <span className="cut-mode-switch" role="group" aria-label="Define-line sub-mode">
-                          <button
-                            className={define.mode === "measure" ? "active" : ""}
-                            onClick={() => setDefine((d) => (d ? { ...d, mode: "measure" } : d))}
-                            title="Measure distances along outlines (d_1, d_2, …)"
-                          >
-                            📏 Measure
-                          </button>
-                          <button
-                            className={define.mode === "formula" ? "active" : ""}
-                            onClick={() => setDefine((d) => (d ? { ...d, mode: "formula" } : d))}
-                            title="Define the new part by a JSON formula"
-                          >
-                            ƒ Define part by formula
-                          </button>
-                        </span>
-                        {define.mode === "measure" && (
-                          <span className="cut-mode-switch" role="group" aria-label="Measure kind">
-                            <button
-                              className={define.kind === "absolute" ? "active" : ""}
-                              onClick={() => setDefine((d) => (d ? { ...d, kind: "absolute" } : d))}
-                              title="Store the measured length as a fixed number"
-                            >
-                              Absolute
+                {patternEditMode && (
+                  <aside className={`edit-bar${editBarCollapsed ? " collapsed" : ""}`} aria-label="Edit tools">
+                    <button
+                      className="edit-bar-toggle"
+                      onClick={toggleEditBar}
+                      title={editBarCollapsed ? "Expand the edit tools" : "Collapse the edit tools"}
+                      aria-expanded={!editBarCollapsed}
+                    >
+                      {editBarCollapsed ? "»" : "« Edit tools"}
+                    </button>
+                    {editTools.map((t) => (
+                      <button
+                        key={t.key}
+                        className={`edit-tool${t.active ? " active" : ""}${t.danger ? " danger" : ""}`}
+                        onClick={t.onClick}
+                        disabled={!t.enabled && !t.active}
+                        title={`${t.label}: ${t.title}`}
+                      aria-label={t.label}
+                      >
+                        <span className="edit-tool-icon" aria-hidden>{t.icon}</span>
+                        {!editBarCollapsed && <span className="edit-tool-label">{t.label}</span>}
+                      </button>
+                    ))}
+                    <div className="edit-bar-sep" />
+                    <button
+                      className="edit-tool"
+                      onClick={handleUndo}
+                      disabled={edits.length === 0}
+                      title={edits.length === 0 ? "Nothing to undo" : "Undo last edit"}
+                    >
+                      <span className="edit-tool-icon" aria-hidden>↶</span>
+                      {!editBarCollapsed && <span className="edit-tool-label">Undo</span>}
+                    </button>
+                    {/* Controls of the active tool, stacked vertically. */}
+                    {!editBarCollapsed && toolBusy && (
+                      <div className="edit-options">
+                        {define && (
+                          <>
+                            <span className="cut-mode-switch" role="group" aria-label="Define-line sub-mode">
+                              <button
+                                className={define.mode === "measure" ? "active" : ""}
+                                onClick={() => setDefine((d) => (d ? { ...d, mode: "measure" } : d))}
+                                title="Measure distances along outlines (d_1, d_2, …)"
+                              >
+                                📏 Measure
+                              </button>
+                              <button
+                                className={define.mode === "formula" ? "active" : ""}
+                                onClick={() => setDefine((d) => (d ? { ...d, mode: "formula" } : d))}
+                                title="Define the new part by a JSON formula"
+                              >
+                                ƒ Define part by formula
+                              </button>
+                            </span>
+                            {define.mode === "measure" && (
+                              <span className="cut-mode-switch" role="group" aria-label="Measure kind">
+                                <button
+                                  className={define.kind === "absolute" ? "active" : ""}
+                                  onClick={() => setDefine((d) => (d ? { ...d, kind: "absolute" } : d))}
+                                  title="Store the measured length as a fixed number"
+                                >
+                                  Absolute
+                                </button>
+                                <button
+                                  className={define.kind === "relative" ? "active" : ""}
+                                  onClick={() => setDefine((d) => (d ? { ...d, kind: "relative" } : d))}
+                                  title="Store the measured points' positions (t) on their lines — the length follows when measurements change"
+                                >
+                                  Relative
+                                </button>
+                              </span>
+                            )}
+                            <button className="btn-secondary" onClick={() => setDefine(null)} title="Leave without adding a part">
+                              Abort
                             </button>
-                            <button
-                              className={define.kind === "relative" ? "active" : ""}
-                              onClick={() => setDefine((d) => (d ? { ...d, kind: "relative" } : d))}
-                              title="Store the measured points' positions (t) on their lines — the length follows when measurements change"
-                            >
-                              Relative
+                          </>
+                        )}
+                        {naming && (
+                          <>
+                            <input
+                              className="piece-name-input"
+                              type="text"
+                              autoFocus
+                              value={naming.value}
+                              placeholder={naming.part}
+                              maxLength={80}
+                              onChange={(e) => setNaming((n) => (n ? { ...n, value: e.target.value } : n))}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") commitNaming();
+                                else if (e.key === "Escape") setNaming(null);
+                              }}
+                            />
+                            <button className="btn-primary" onClick={commitNaming} title="Save the name (Enter)">
+                              Save name
                             </button>
+                            <button className="btn-secondary" onClick={() => setNaming(null)} title="Cancel (Esc)">
+                              Cancel
+                            </button>
+                          </>
+                        )}
+                        {smooth && (
+                          <>
+                            <button
+                              className="btn-primary"
+                              onClick={commitSmooth}
+                              disabled={!smoothCurve}
+                              title={smoothCurve ? "Replace the selected lines by the previewed curve" : "Select ≥ 2 consecutive lines first"}
+                            >
+                              Smooth now
+                            </button>
+                            <button className="btn-secondary" onClick={() => setSmooth(null)} title="Cancel smoothing">
+                              Abort smoothing
+                            </button>
+                          </>
+                        )}
+                        {specify && (
+                          <>
+                            {specify.sel && (
+                              <>
+                                <label className="specify-field">
+                                  Line type
+                                  <select
+                                    value={specify.lineType}
+                                    onChange={(e) =>
+                                      setSpecify((s) => (s ? { ...s, lineType: e.target.value as LineType } : s))
+                                    }
+                                  >
+                                    {LINE_TYPES.map((lt) => (
+                                      <option key={lt} value={lt}>
+                                        {lt} (allowance: {formatAllowance(allowanceTypeOf(lt))})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="specify-field">
+                                  Allowance type
+                                  <span className="specify-derived" title="Follows from the line type">
+                                    {allowanceTypeOf(specify.lineType)}
+                                  </span>
+                                </label>
+                                <label className="specify-field">
+                                  Merge marker
+                                  <select
+                                    value={specify.marker ?? ""}
+                                    onChange={(e) =>
+                                      setSpecify((s) =>
+                                        s ? { ...s, marker: e.target.value === "" ? null : (e.target.value as MergeMarker) } : s
+                                      )
+                                    }
+                                  >
+                                    <option value="">— none —</option>
+                                    {MERGE_MARKERS.map((m) => (
+                                      <option key={m} value={m}>{m}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <button className="btn-primary" onClick={applySpecify} title="Store this line specification">
+                                  Apply
+                                </button>
+                              </>
+                            )}
+                            <button className="btn-secondary" onClick={() => setSpecify(null)} title="Leave line specification">
+                              Done
+                            </button>
+                          </>
+                        )}
+                        {merge && (
+                          <>
+                            {merge.sel && merge.cand && (
+                              <>
+                                <button className="btn-secondary" onClick={pullTogether} title="Move the parts together to align the lines">
+                                  Pull together
+                                </button>
+                                <button className="btn-primary" onClick={mergeNow} title="Merge the two parts into one">
+                                  Merge now
+                                </button>
+                              </>
+                            )}
+                            <button className="btn-secondary" onClick={abortMerge} title="Cancel the merge">
+                              Abort merge
+                            </button>
+                          </>
+                        )}
+                        {cut && (
+                          <>
+                            <span className="cut-mode-switch" role="group" aria-label="Cut sub-mode">
+                              <button
+                                className={cut.mode === "draw" ? "active" : ""}
+                                onClick={() => setCutMode("draw")}
+                                title="Draw the cut line (start/end snap to marks)"
+                              >
+                                ✂ Cut line
+                              </button>
+                              <button
+                                className={cut.mode === "measure" ? "active" : ""}
+                                onClick={() => setCutMode("measure")}
+                                title="Measure distances along the outline and mark points"
+                              >
+                                📏 Measure
+                              </button>
+                            </span>
+                            {cut.marks.length > 0 && (
+                              <button
+                                className="btn-secondary"
+                                onClick={clearCutMarks}
+                                title="Remove all temporary marks"
+                              >
+                                Clear marks ({cut.marks.length})
+                              </button>
+                            )}
+                            <button
+                              className="btn-primary"
+                              onClick={commitCut}
+                              disabled={!cutValid}
+                              title={cutValid ? "Split the part in two" : "Place two points that divide the part"}
+                            >
+                              Cut now
+                            </button>
+                            <button className="btn-secondary" onClick={abortCut} title="Cancel this cut">
+                              Abort cutting
+                            </button>
+                          </>
+                        )}
+                        {rotate && (
+                          <button className="btn-secondary" onClick={abortRotate} title="Cancel this rotation">
+                            Abort rotate
+                          </button>
+                        )}
+                        {merge && (
+                          <span className="merge-config" title="Merge tolerances: max angle and max length difference">
+                            <label>
+                              ≤
+                              <input
+                                type="number" min={0} max={90} value={mergeAngle}
+                                onChange={(e) => setMergeAngle(Number(e.target.value))}
+                              />
+                              °
+                            </label>
+                            <label>
+                              ±
+                              <input
+                                type="number" min={0} max={100} value={mergeLenPct}
+                                onChange={(e) => setMergeLenPct(Number(e.target.value))}
+                              />
+                              %
+                            </label>
                           </span>
                         )}
-                        <button className="btn-secondary" onClick={() => setDefine(null)} title="Leave without adding a part">
-                          Abort
-                        </button>
-                      </>
+                      </div>
                     )}
-                    {naming && (
-                      <>
-                        <input
-                          className="piece-name-input"
-                          type="text"
-                          autoFocus
-                          value={naming.value}
-                          placeholder={naming.part}
-                          maxLength={80}
-                          onChange={(e) => setNaming((n) => (n ? { ...n, value: e.target.value } : n))}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") commitNaming();
-                            else if (e.key === "Escape") setNaming(null);
-                          }}
-                        />
-                        <button className="btn-primary" onClick={commitNaming} title="Save the name (Enter)">
-                          Save name
-                        </button>
-                        <button className="btn-secondary" onClick={() => setNaming(null)} title="Cancel (Esc)">
-                          Cancel
-                        </button>
-                      </>
-                    )}
-                    {smooth && (
-                      <>
-                        <button
-                          className="btn-primary"
-                          onClick={commitSmooth}
-                          disabled={!smoothCurve}
-                          title={smoothCurve ? "Replace the selected lines by the previewed curve" : "Select ≥ 2 consecutive lines first"}
-                        >
-                          Smooth now
-                        </button>
-                        <button className="btn-secondary" onClick={() => setSmooth(null)} title="Cancel smoothing">
-                          Abort smoothing
-                        </button>
-                      </>
-                    )}
-                    {specify && (
-                      <>
-                        {specify.sel && (
-                          <>
-                            <label className="specify-field">
-                              Line type
-                              <select
-                                value={specify.lineType}
-                                onChange={(e) =>
-                                  setSpecify((s) => (s ? { ...s, lineType: e.target.value as LineType } : s))
-                                }
-                              >
-                                {LINE_TYPES.map((lt) => (
-                                  <option key={lt} value={lt}>
-                                    {lt} (allowance: {formatAllowance(allowanceTypeOf(lt))})
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label className="specify-field">
-                              Allowance type
-                              <span className="specify-derived" title="Follows from the line type">
-                                {allowanceTypeOf(specify.lineType)}
-                              </span>
-                            </label>
-                            <label className="specify-field">
-                              Merge marker
-                              <select
-                                value={specify.marker ?? ""}
-                                onChange={(e) =>
-                                  setSpecify((s) =>
-                                    s ? { ...s, marker: e.target.value === "" ? null : (e.target.value as MergeMarker) } : s
-                                  )
-                                }
-                              >
-                                <option value="">— none —</option>
-                                {MERGE_MARKERS.map((m) => (
-                                  <option key={m} value={m}>{m}</option>
-                                ))}
-                              </select>
-                            </label>
-                            <button className="btn-primary" onClick={applySpecify} title="Store this line specification">
-                              Apply
-                            </button>
-                          </>
-                        )}
-                        <button className="btn-secondary" onClick={() => setSpecify(null)} title="Leave line specification">
-                          Done
-                        </button>
-                      </>
-                    )}
-                    {merge && (
-                      <>
-                        {merge.sel && merge.cand && (
-                          <>
-                            <button className="btn-secondary" onClick={pullTogether} title="Move the parts together to align the lines">
-                              Pull together
-                            </button>
-                            <button className="btn-primary" onClick={mergeNow} title="Merge the two parts into one">
-                              Merge now
-                            </button>
-                          </>
-                        )}
-                        <button className="btn-secondary" onClick={abortMerge} title="Cancel the merge">
-                          Abort merge
-                        </button>
-                      </>
-                    )}
-                    {cut && (
-                      <>
-                        <span className="cut-mode-switch" role="group" aria-label="Cut sub-mode">
-                          <button
-                            className={cut.mode === "draw" ? "active" : ""}
-                            onClick={() => setCutMode("draw")}
-                            title="Draw the cut line (start/end snap to marks)"
-                          >
-                            ✂ Cut line
-                          </button>
-                          <button
-                            className={cut.mode === "measure" ? "active" : ""}
-                            onClick={() => setCutMode("measure")}
-                            title="Measure distances along the outline and mark points"
-                          >
-                            📏 Measure
-                          </button>
-                        </span>
-                        {cut.marks.length > 0 && (
-                          <button
-                            className="btn-secondary"
-                            onClick={clearCutMarks}
-                            title="Remove all temporary marks"
-                          >
-                            Clear marks ({cut.marks.length})
-                          </button>
-                        )}
-                        <button
-                          className="btn-primary"
-                          onClick={commitCut}
-                          disabled={!cutValid}
-                          title={cutValid ? "Split the part in two" : "Place two points that divide the part"}
-                        >
-                          Cut now
-                        </button>
-                        <button className="btn-secondary" onClick={abortCut} title="Cancel this cut">
-                          Abort cutting
-                        </button>
-                      </>
-                    )}
-                    {rotate && (
-                      <button className="btn-secondary" onClick={abortRotate} title="Cancel this rotation">
-                        Abort rotate
-                      </button>
-                    )}
-                    {merge && (
-                      <span className="merge-config" title="Merge tolerances: max angle and max length difference">
-                        <label>
-                          ≤
-                          <input
-                            type="number" min={0} max={90} value={mergeAngle}
-                            onChange={(e) => setMergeAngle(Number(e.target.value))}
-                          />
-                          °
-                        </label>
-                        <label>
-                          ±
-                          <input
-                            type="number" min={0} max={100} value={mergeLenPct}
-                            onChange={(e) => setMergeLenPct(Number(e.target.value))}
-                          />
-                          %
-                        </label>
-                      </span>
-                    )}
-                  </div>
+                  </aside>
                 )}
-              </aside>
+              </div>
             )}
             <div className="canvas-wrap">
               {loadedParts.length === 0 ? (
@@ -2382,7 +2385,7 @@ export default function Home() {
             </div>
           </div>
         </div>
-        {loadedParts.length > 0 && <InspectorPanel geometry={merged} />}
+        {tailorMode && loadedParts.length > 0 && <InspectorPanel geometry={merged} />}
       </section>
     </main>
   );

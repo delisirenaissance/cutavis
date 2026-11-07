@@ -32,7 +32,8 @@ function Section({
 }
 
 export default function InspectorPanel({ geometry }: { geometry: GeometryResult }) {
-  const [collapsed, setCollapsed] = useState(false);
+  // Collapsed by default (only shown in tailor mode).
+  const [collapsed, setCollapsed] = useState(true);
 
   const variables = Object.entries(geometry.localValues);
   const points = Object.entries(geometry.points);

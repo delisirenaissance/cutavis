@@ -340,6 +340,47 @@ leaves it.
 
 ## UI (`app/page.tsx`, `components/PatternSvg.tsx`)
 
+- **Two pages, one component** (`view: "shop" | "canvas"`), synced with the
+  URL hash `#/pattern/<name>`, so Back returns to the start page and a reload
+  stays on the pattern:
+  - **Start page** (`components/PatternShop.tsx`): a hero section (half the
+    viewport; placeholder "lorem ipsum" / "dolor sit amet..") plus one product
+    card per pattern file.
+    - Each card has a 2-slide carousel: `patterndesigns/<name>Design.png`, then
+      `patternthumbnails/<name>Thumbnail.png`, served by
+      `app/api/pattern-images/[kind]/[name]` (404 → placeholder text).
+    - The carousel controls don't open the card.
+    - `openPattern(name)` re-opens the already loaded pattern without
+      reloading (unsaved edits are kept); another pattern asks for confirmation
+      if there are unsaved changes, then calls `handleLoadPattern`.
+  - **Canvas page**: a header (← All patterns, pattern name, edit count,
+    saved/unsaved), a left panel of `Collapsible` sections, and the plot.
+    - Left panel: Measurements (collapsed by default, hint = measurement set)
+      and Display (collapsed). In edit mode only, "Define pattern" (the former
+      Pattern-tab edit content: part dropdown, + Add part, Customize, JSON
+      editor, Save, Save pattern), collapsed every time edit mode is entered.
+    - Collapse states are not persisted.
+  - There is no tab strip or Pattern tab any more; `activeTab` is gone (old
+    stored values are ignored). The non-edit part list with highlighting was
+    removed together with the Pattern tab.
+- Left of the canvas: the `edit-column` = "✎ Edit pattern" / "✓ Done editing"
+  toggle, with the collapsible edit-tools bar below it in edit mode.
+- **Tailor mode** (`tailorMode`, persisted, default OFF; `TailorSwitch` at the
+  top right of both pages):
+  - Only when on are the Display section, the whole edit column (and
+    therefore edit mode and "Define pattern"), and the Inspector rendered.
+    The Inspector always starts collapsed.
+  - Switching it off while editing calls `exitPatternEdit`.
+- **Phones (≤ 700 px)**, the media block at the END of globals.css (it must
+  stay last, because equal-specificity base rules defined later would
+  override it):
+  - Canvas page in one column: header, plot (full width, ≥ 72vh), then the
+    settings panel.
+  - The edit column becomes a fixed bottom icon bar: labels hidden, the
+    collapse toggle hidden, tooltips "Name: description" via `title`, plus
+    `aria-label`.
+  - The active tool's `edit-options` open as a fixed sheet above the bar.
+
 - `partEntries` (base geometry per loaded part) → `plotPieces =
   applyPatternEdits(...)` → `PatternSvg` draws one `<g>` per piece (click to
   select, drag = translate edit).

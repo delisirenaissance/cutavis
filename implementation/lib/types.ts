@@ -59,17 +59,34 @@ export type Measurements = Record<string, number>;
 
 // ── Line specifications (set per line in pattern edit mode) ──────────────────
 
-/** Seam-allowance class of a line. "seam" is the default for every line. */
-export type AllowanceType = "seam" | "maxi-allowance-hem" | "mini-allowance-hem";
+/** Type of a line, chosen by the user ("Specify line"). "seam" is the default
+ *  for every line. The line type determines the allowance type. */
+export type LineType = "seam" | "maxi-allowance-hem" | "mini-allowance-hem" | "fold";
 
-/** Seam allowance printed outside each line type, in mm. */
+export const LINE_TYPES: LineType[] = ["seam", "maxi-allowance-hem", "mini-allowance-hem", "fold"];
+
+/** Seam-allowance class of a line (derived from its line type). */
+export type AllowanceType = "seam" | "maxi-allowance-hem" | "mini-allowance-hem" | "fold-no-allowance";
+
+/** Seam allowance printed outside each allowance type, in mm. */
 export const ALLOWANCE_MM: Record<AllowanceType, number> = {
   seam: 10,
   "maxi-allowance-hem": 40,
   "mini-allowance-hem": 7,
+  "fold-no-allowance": 0, // cut directly on the fold line
 };
 
-export const ALLOWANCE_TYPES: AllowanceType[] = ["seam", "maxi-allowance-hem", "mini-allowance-hem"];
+/** The allowance type a line type implies: a fold gets no allowance; the
+ *  other line types share their allowance type's name. */
+export function allowanceTypeOf(lineType: LineType): AllowanceType {
+  return lineType === "fold" ? "fold-no-allowance" : lineType;
+}
+
+/** Human-readable allowance width, e.g. "10 mm", "4 cm", "none". */
+export function formatAllowance(a: AllowanceType): string {
+  const mm = ALLOWANCE_MM[a];
+  return mm === 0 ? "none" : mm > 10 ? `${mm / 10} cm` : `${mm} mm`;
+}
 
 /** Which lines of different parts belong together when sewing. Informational
  *  only — not used for printing. */
@@ -92,8 +109,10 @@ export const MERGE_MARKERS: MergeMarker[] = [
 
 /** Specification of one line of a (possibly derived) part. */
 export interface LineSpec {
+  lineType: LineType;
+  /** Always `allowanceTypeOf(lineType)`. */
   allowance: AllowanceType;
   marker: MergeMarker | null;
 }
 
-export const DEFAULT_LINE_SPEC: LineSpec = { allowance: "seam", marker: null };
+export const DEFAULT_LINE_SPEC: LineSpec = { lineType: "seam", allowance: "seam", marker: null };

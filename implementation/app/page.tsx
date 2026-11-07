@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { collectVariables, evaluatePart, mergeGeometries, type GeometryResult } from "@/lib/geometry";
 import { samplePart } from "@/lib/samplePart";
 import {
@@ -17,19 +17,32 @@ import {
 import type { VariableTables } from "@/lib/variableCsv";
 import { loadState, saveState, type StoredState } from "@/lib/storage";
 import {
-  ALLOWANCE_MM,
-  ALLOWANCE_TYPES,
+  allowanceTypeOf,
   DEFAULT_LINE_SPEC,
+  formatAllowance,
+  LINE_TYPES,
   MERGE_MARKERS,
-  type AllowanceType,
+  type LineType,
   type Measurements,
   type MergeMarker,
   type PartDef,
 } from "@/lib/types";
 import { seamAllowanceOutline } from "@/lib/allowance";
 import { findSmoothRun, fitCubicToChain, SMOOTH_SKIP_MAX_CM } from "@/lib/smooth";
+import { relativeMoveAfterDrag, relativeMoveForLines } from "@/lib/relativeMove";
+import {
+  evaluateDefinedPart,
+  measureName,
+  measureValues,
+  parsePartDef,
+  placementRightOf,
+  rectangleTemplate,
+  type PartMeasure,
+} from "@/lib/definePart";
+import type { DefineMeasured } from "@/components/DefineLayer";
 import {
   applyPatternEdits,
+  pieceLabel,
   belongsToPart,
   migrateEdits,
   rootPartOf,
@@ -80,7 +93,7 @@ function isUsablePartText(text: string | undefined): boolean {
   }
 }
 
-type Tab = "measurements" | "display" | "pattern";
+type Tab = "pattern" | "measurements" | "display";
 type VariableSets = Record<string, string>;
 
 const DEFAULT_SET = MEASUREMENT_SET_NAMES[0];
@@ -125,6 +138,7 @@ export default function Home() {
   const [showAuxLines, setShowAuxLines] = useState(false);
   const [showPoints, setShowPoints] = useState(true);
   const [showAllowance, setShowAllowance] = useState(true);
+  const [editBarCollapsed, setEditBarCollapsed] = useState(false);
 
   // Ephemeral UI state — not persisted
   const [partFiles, setPartFiles] = useState<string[]>([]);
@@ -178,16 +192,29 @@ export default function Home() {
   } | null>(null);
   const [mergeAngle, setMergeAngle] = useState(5);
   const [mergeLenPct, setMergeLenPct] = useState(10);
-  // "Specify line" mode: `sel` is the picked line; `allowance`/`marker` are the
-  // values in the dropdowns (prefilled from the line's current spec).
+  // "Specify line" mode: `sel` is the picked line; `lineType`/`marker` are the
+  // values in the dropdowns (prefilled from the line's current spec). The
+  // allowance type follows from the line type (fold → fold-no-allowance).
   const [specify, setSpecify] = useState<{
     sel?: { pieceId: string; line: string };
-    allowance: AllowanceType;
+    lineType: LineType;
     marker: MergeMarker | null;
   } | null>(null);
   // "Smooth" mode: the piece and the outline lines picked so far (≥ 2
   // consecutive ones can be replaced by one fitted cubic).
   const [smooth, setSmooth] = useState<{ pieceId?: string; lines: string[] } | null>(null);
+  // Inline "name this piece" editor: the piece and the text being typed.
+  const [naming, setNaming] = useState<{ part: string; value: string } | null>(null);
+  // "Define part" mode: measure distances (d_1, d_2, …) on any outline, then
+  // define a new part by a JSON formula that may use them. `json` null = show
+  // the generated rectangle template; `point` is only for drawing the marks.
+  const [define, setDefine] = useState<{
+    mode: "measure" | "formula";
+    kind: "absolute" | "relative";
+    measures: (PartMeasure & { point: Vec2 })[];
+    json: string | null;
+    name: string;
+  } | null>(null);
 
   // ── Persistence: write a snapshot of all current state plus any overrides ──
 
@@ -208,6 +235,7 @@ export default function Home() {
       showAuxLines,
       showPoints,
       showAllowance,
+      editBarCollapsed,
       ...overrides,
     });
   }
@@ -250,6 +278,7 @@ export default function Home() {
     if (stored.showAuxLines !== undefined) setShowAuxLines(stored.showAuxLines);
     if (stored.showPoints   !== undefined) setShowPoints(stored.showPoints);
     if (stored.showAllowance !== undefined) setShowAllowance(stored.showAllowance);
+    if (stored.editBarCollapsed !== undefined) setEditBarCollapsed(stored.editBarCollapsed);
 
     // ── Restore the loaded parts ────────────────────────────────────────────
     // Prefer the new multi-part storage; otherwise migrate the old single-part
@@ -352,10 +381,18 @@ export default function Home() {
     const bases: PartPiece[] = partEntries
       .filter((e) => e.base)
       .map((e) => ({ id: e.file, geometry: e.base! }));
-    return applyPatternEdits(bases, edits);
-  }, [partEntries, edits]);
+    // variableValues: formula scope for parts defined in "Define part" mode.
+    return applyPatternEdits(bases, edits, variableValues);
+  }, [partEntries, edits, variableValues]);
 
   const loadedFiles = useMemo(() => loadedParts.map((p) => p.file), [loadedParts]);
+
+  // Display names of the current pieces (id → name), for the part lists.
+  const pieceNames = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const p of plotPieces) if (p.name) out[p.id] = p.name;
+    return out;
+  }, [plotPieces]);
 
   // Derived parts (created by cuts/merges) currently on the plot, per loaded
   // part file, in natural order (file_1, file_2, file_2_1, …, file_10).
@@ -417,12 +454,75 @@ export default function Home() {
     [selectedPiece]
   );
   // Only one edit tool (cut / rotate / merge / specify / smooth) at a time.
-  const toolBusy = cut != null || rotate != null || merge != null || specify != null || smooth != null;
+  const toolBusy =
+    cut != null || rotate != null || merge != null || specify != null || smooth != null || naming != null || define != null;
   const canCut = patternEditMode && !toolBusy && selectedPiece != null && selectedCuttable;
   const canRotate = patternEditMode && !toolBusy && selectedPiece != null && selectedCuttable;
   const canMerge = patternEditMode && !toolBusy && plotPieces.length >= 2;
   const canSpecify = patternEditMode && !toolBusy && plotPieces.length > 0;
   const canSmooth = patternEditMode && !toolBusy && plotPieces.length > 0;
+  const canDefine = patternEditMode && !toolBusy && plotPieces.length > 0;
+
+  // ── Edit-tools sidebar ─────────────────────────────────────────────────────
+  // Starting a tool re-expands the bar so its controls (Cut now, Apply, …) are
+  // visible; collapsing while a tool runs is respected.
+  useEffect(() => {
+    if (toolBusy) setEditBarCollapsed(false);
+  }, [toolBusy]);
+
+  function toggleEditBar() {
+    const next = !editBarCollapsed;
+    setEditBarCollapsed(next);
+    persist({ editBarCollapsed: next });
+  }
+
+  const editTools: {
+    key: string;
+    icon: string;
+    label: string;
+    onClick: () => void;
+    enabled: boolean;
+    active: boolean;
+    title: string;
+    danger?: boolean;
+  }[] = [
+    {
+      key: "cut", icon: "✂", label: "Cut part", onClick: startCut, enabled: canCut, active: cut != null,
+      title: canCut ? "Cut the selected part along a line" : "Select a part with a closed outline to cut it",
+    },
+    {
+      key: "rotate", icon: "↻", label: "Rotate part", onClick: startRotate, enabled: canRotate, active: rotate != null,
+      title: canRotate ? "Rotate the selected part around a point" : "Select a part with a closed outline to rotate it",
+    },
+    {
+      key: "merge", icon: "⧉", label: "Merge parts", onClick: startMerge, enabled: canMerge, active: merge != null,
+      title: canMerge ? "Merge two parts along a line" : "Load at least two parts to merge",
+    },
+    {
+      key: "specify", icon: "✎", label: "Specify line", onClick: startSpecify, enabled: canSpecify, active: specify != null,
+      title: "Set a line's type (seam allowance) and merge marker",
+    },
+    {
+      key: "smooth", icon: "〰", label: "Smooth lines", onClick: startSmooth, enabled: canSmooth, active: smooth != null,
+      title: "Replace consecutive outline lines by one smooth curve",
+    },
+    {
+      key: "define", icon: "📐", label: "Define part", onClick: startDefine, enabled: canDefine, active: define != null,
+      title: "Define a new pattern part from measurements and a formula",
+    },
+    {
+      key: "name", icon: "🏷", label: "Name part", onClick: startNaming,
+      enabled: patternEditMode && !toolBusy && selectedPiece != null, active: naming != null,
+      title: selectedPiece ? "Give the selected part a display name" : "Select a part on the plot first",
+    },
+    {
+      key: "delete", icon: "🗑", label: "Delete part", onClick: handleDeleteSelected,
+      enabled: patternEditMode && !toolBusy && selectedPiece != null, active: false, danger: true,
+      title: selectedPiece
+        ? `Delete ${pieceLabel(selectedPiece)} (Del key) — undo brings it back`
+        : "Select a part on the plot first",
+    },
+  ];
 
   // The piece being cut and its outline loop (to snap clicks onto).
   const cutPiece = useMemo(
@@ -535,7 +635,7 @@ export default function Home() {
     return allOutlineSegs.map((s) => {
       const key = `${s.pieceId}::${s.line}`;
       const spec = geomById.get(s.pieceId)?.lineSpecs?.[s.line];
-      const specified = !!spec && (spec.allowance !== "seam" || spec.marker != null);
+      const specified = !!spec && (spec.lineType !== "seam" || spec.marker != null);
       const role: "plain" | "selected" | "candidate" =
         key === selKey ? "selected" : specified ? "candidate" : "plain";
       return { key, bezier: s.bezier, role, clickable: true };
@@ -583,6 +683,45 @@ export default function Home() {
           : ""
       } — the orange curve previews the result. Press “Smooth now”.`
     : `The selected lines must be consecutive along the outline (gaps of lines ≤ ${SMOOTH_SKIP_MAX_CM} cm are fine) and not the whole outline.`;
+
+  // ── Define-line derived state ──────────────────────────────────────────────
+  // Outer outlines of all pieces (measurable in define mode).
+  const defineLoops = useMemo(() => {
+    if (!define) return [];
+    const out: { pieceId: string; loop: import("@/lib/split").BoundarySeg[] }[] = [];
+    for (const p of plotPieces) {
+      const ob = extractOuterBoundary(boundarySegments(p.geometry));
+      if (ob.ok) out.push({ pieceId: p.id, loop: ob.loop });
+    }
+    return out;
+  }, [define != null, plotPieces]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Current values of d_1 … (relative ones re-measured on the current pieces).
+  const defineValues = useMemo(() => {
+    if (!define) return {};
+    const byId = new Map(plotPieces.map((p) => [p.id, p.geometry]));
+    return measureValues(define.measures, byId);
+  }, [define, plotPieces]);
+  const defineTemplate = useMemo(
+    () => JSON.stringify(rectangleTemplate((define?.measures ?? []).map((m) => m.name)), null, 2),
+    [define?.measures]
+  );
+  const defineText = define ? define.json ?? defineTemplate : "";
+  const defineParsed = useMemo(() => (define ? parsePartDef(defineText) : null), [define, defineText]);
+  const defineAt = useMemo(() => placementRightOf(plotPieces), [plotPieces]);
+  // Live preview of the part (exactly what "Save part" will add).
+  const definePreview = useMemo(
+    () =>
+      defineParsed?.def ? evaluateDefinedPart(defineParsed.def, defineValues, variableValues, defineAt) : null,
+    [defineParsed, defineValues, variableValues, defineAt]
+  );
+  const defineEvalErrors = definePreview ? Object.entries(definePreview.errors) : [];
+  const nextMeasureName = measureName((define?.measures.length ?? 0) + 1);
+
+  const defineInstruction = !define
+    ? ""
+    : define.mode === "measure"
+    ? `Define part · measure (${define.kind}): click a start point on any outline, then click the end point — or type a distance (cm) + Enter. It becomes ${nextMeasureName}. Esc cancels.`
+    : "Define part by formula: edit the part definition below — formulas may use d_1, d_2, … and body measurements. The blue dashed preview shows the result.";
 
   // Seam-allowance polygons per piece for the plot.
   const allowanceByPiece = useMemo(() => {
@@ -632,6 +771,8 @@ export default function Home() {
     setMerge(null);
     setSpecify(null);
     setSmooth(null);
+    setNaming(null);
+    setDefine(null);
   }
 
   // Non-edit-mode: click a part name to highlight its plot lines in blue.
@@ -747,10 +888,39 @@ export default function Home() {
     }
   }
 
+  // Delete the selected piece as an undoable edit.
+  function handleDeleteSelected() {
+    if (!patternEditMode || toolBusy || !selectedPiece) return;
+    const nextEdits: PatternEdit[] = [...edits, { type: "delete", part: selectedPiece.id }];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+    setSelectedPlotPart(null);
+  }
+
+  // Del / Backspace deletes the selected piece in edit mode (not while typing
+  // in a field, and not while another tool is active).
+  const deleteKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  deleteKeyRef.current = (e: KeyboardEvent) => {
+    if (e.key !== "Delete" && e.key !== "Backspace") return;
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && (tgt.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName))) return;
+    if (!patternEditMode || toolBusy || !selectedPiece) return;
+    e.preventDefault();
+    handleDeleteSelected();
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => deleteKeyRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Commit a drag as one undoable translate edit.
+  // The move is anchored to the nearest line of the nearest other part, so the
+  // relative position survives resizing (dx/dy stays as the fallback).
   function handleMovePart(id: string, dx: number, dy: number) {
     if (dx === 0 && dy === 0) return;
-    const nextEdits: PatternEdit[] = [...edits, { type: "translate", part: id, dx, dy }];
+    const rel = relativeMoveAfterDrag(plotPieces, id, dx, dy);
+    const nextEdits: PatternEdit[] = [...edits, { type: "translate", part: id, dx, dy, ...(rel ? { rel } : {}) }];
     setEdits(nextEdits);
     persist({ edits: nextEdits });
   }
@@ -770,7 +940,7 @@ export default function Home() {
     const res = buildPatternPdf(plotPieces, settings, printOptions, {
       title,
       info: [
-        `Parts: ${plotPieces.map((p) => p.id).join(", ")}`,
+        `Parts: ${plotPieces.map((p) => (p.name ? `${p.name} (${p.id})` : p.id)).join(", ")}`,
         `Measurements: ${selectedSet} - created ${new Date().toLocaleString()}`,
       ],
     });
@@ -927,6 +1097,89 @@ export default function Home() {
 
   // ── Smooth interaction ─────────────────────────────────────────────────────
 
+  // ── Define-line interaction ────────────────────────────────────────────────
+
+  function startDefine() {
+    if (!canDefine) return;
+    setDefine({ mode: "measure", kind: "absolute", measures: [], json: null, name: "" });
+  }
+
+  // A finished measurement becomes d_n: a fixed value (absolute), or anchors
+  // on the measured lines (relative; t along each line's definition direction,
+  // like cut anchors) that are re-measured on every replay.
+  function handleDefineMeasured(m: DefineMeasured) {
+    setDefine((d) => {
+      if (!d) return d;
+      const name = measureName(d.measures.length + 1);
+      const piece = plotPieces.find((p) => p.id === m.pieceId);
+      const anchor = (end: { line: string; point: Vec2 }) => {
+        const bz = piece ? parsePathBezier(piece.geometry.paths[end.line]) : null;
+        return { line: end.line, t: bz ? nearestParamOnBezier(bz, end.point) : 0 };
+      };
+      const measure: PartMeasure & { point: Vec2 } =
+        d.kind === "absolute" || !piece
+          ? { name, kind: "absolute", value: m.dist, point: m.to.point }
+          : {
+              name,
+              kind: "relative",
+              value: m.dist,
+              part: m.pieceId,
+              from: anchor(m.from),
+              to: anchor(m.to),
+              ...(m.long ? { long: true } : {}),
+              point: m.to.point,
+            };
+      return { ...d, measures: [...d.measures, measure] };
+    });
+  }
+
+  // Store the new part as one edit (measurements without their display points).
+  function saveDefinedPart() {
+    if (!define || !defineParsed?.def || !definePreview) return;
+    const taken = new Set([
+      ...plotPieces.map((p) => p.id),
+      ...edits.flatMap((e) => (e.type === "definePart" ? [e.part] : [])),
+    ]);
+    let n = 1;
+    while (taken.has(`defined_${n}`)) n++;
+    const id = `defined_${n}`;
+    const measures: PartMeasure[] = define.measures.map(({ point: _point, ...m }) => m as PartMeasure);
+    const edit: PatternEdit = {
+      type: "definePart",
+      part: id,
+      def: defineParsed.def,
+      measures,
+      at: defineAt,
+      ...(define.name.trim() ? { name: define.name.trim() } : {}),
+    };
+    const nextEdits = [...edits, edit];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+    setDefine(null);
+    setSelectedPlotPart(id);
+  }
+
+  // ── Naming a piece ─────────────────────────────────────────────────────────
+
+  function startNaming() {
+    if (!selectedPiece || toolBusy || !patternEditMode) return;
+    setNaming({ part: selectedPiece.id, value: selectedPiece.name ?? "" });
+  }
+
+  // Store the name as an undoable edit (empty → remove the name). No-op if
+  // unchanged.
+  function commitNaming() {
+    if (!naming) return;
+    const current = plotPieces.find((p) => p.id === naming.part)?.name ?? "";
+    const name = naming.value.trim();
+    if (name !== current) {
+      const nextEdits: PatternEdit[] = [...edits, { type: "rename", part: naming.part, name }];
+      setEdits(nextEdits);
+      persist({ edits: nextEdits });
+    }
+    setNaming(null);
+  }
+
   function startSmooth() {
     if (!canSmooth) return;
     setSmooth({ lines: [] });
@@ -961,7 +1214,7 @@ export default function Home() {
 
   function startSpecify() {
     if (!canSpecify) return;
-    setSpecify({ ...DEFAULT_LINE_SPEC });
+    setSpecify({ lineType: DEFAULT_LINE_SPEC.lineType, marker: null });
   }
 
   // Pick a line; the dropdowns are prefilled with its current specification.
@@ -970,7 +1223,7 @@ export default function Home() {
     const pieceId = key.slice(0, sep);
     const line = key.slice(sep + 2);
     const spec = plotPieces.find((p) => p.id === pieceId)?.geometry.lineSpecs?.[line] ?? DEFAULT_LINE_SPEC;
-    setSpecify({ sel: { pieceId, line }, allowance: spec.allowance, marker: spec.marker });
+    setSpecify({ sel: { pieceId, line }, lineType: spec.lineType, marker: spec.marker });
   }
 
   // Store the chosen spec as an undoable edit; stay in the mode for the next line.
@@ -980,13 +1233,14 @@ export default function Home() {
       type: "lineSpec",
       part: specify.sel.pieceId,
       line: specify.sel.line,
-      allowance: specify.allowance,
+      lineType: specify.lineType,
+      allowance: allowanceTypeOf(specify.lineType),
       marker: specify.marker,
     };
     const nextEdits = [...edits, edit];
     setEdits(nextEdits);
     persist({ edits: nextEdits });
-    setSpecify({ ...DEFAULT_LINE_SPEC });
+    setSpecify({ lineType: DEFAULT_LINE_SPEC.lineType, marker: null });
   }
 
   // Pick a line: first click sets the selected line, second sets the merge line.
@@ -1009,7 +1263,16 @@ export default function Home() {
     if (!gSel || !gCand) return;
     const off = pullTogetherOffset(gSel.geometry, merge.sel.line, gCand.geometry, merge.cand.line);
     if (!off || (Math.abs(off.dx) < 1e-6 && Math.abs(off.dy) < 1e-6)) return;
-    const edit: PatternEdit = { type: "translate", part: merge.cand.pieceId, dx: off.dx, dy: off.dy };
+    // Anchor exactly the two lines being aligned, so they stay together when
+    // the parts are resized later.
+    const rel = relativeMoveForLines(gCand.geometry, merge.cand.line, gSel, merge.sel.line, off.dx, off.dy);
+    const edit: PatternEdit = {
+      type: "translate",
+      part: merge.cand.pieceId,
+      dx: off.dx,
+      dy: off.dy,
+      ...(rel ? { rel } : {}),
+    };
     const nextEdits = [...edits, edit];
     setEdits(nextEdits);
     persist({ edits: nextEdits });
@@ -1405,7 +1668,7 @@ export default function Home() {
               />
               Show seam allowance
               <span className="checkbox-note">
-                (on the plot and in the PDF; seam 10 mm, mini-allowance-hem 7 mm, maxi-allowance-hem 4 cm — set per line with “Specify line”)
+                (on the plot and in the PDF; seam 10 mm, mini-allowance-hem 7 mm, maxi-allowance-hem 4 cm, fold none — set per line with “Specify line”)
               </span>
             </label>
           </div>
@@ -1445,6 +1708,7 @@ export default function Home() {
                       title="Highlight this part's lines on the plot"
                     >
                       {p.file}
+                      {pieceNames[p.file] && <span className="piece-display-name"> — {pieceNames[p.file]}</span>}
                     </button>
                     {derivedPartsByFile[p.file]?.length > 0 && (
                       <ul className="derived-part-list">
@@ -1458,6 +1722,7 @@ export default function Home() {
                               title="Highlight this derived part on the plot"
                             >
                               {id}
+                              {pieceNames[id] && <span className="piece-display-name"> — {pieceNames[id]}</span>}
                             </button>
                           </li>
                         ))}
@@ -1555,6 +1820,7 @@ export default function Home() {
                         title="Select this part on the plot (move, rotate, cut, merge)"
                       >
                         {id}
+                        {pieceNames[id] && <span className="piece-display-name"> — {pieceNames[id]}</span>}
                       </button>
                     </li>
                   ))}
@@ -1686,214 +1952,16 @@ export default function Home() {
                 ? specifyInstruction
                 : smooth
                 ? smoothInstruction
-                : selectedPlotPart
-                ? `Selected: ${selectedPlotPart} — drag on the plot to move it`
+                : define
+                ? defineInstruction
+                : naming
+                ? `Name for ${naming.part} (shown on the plot and in the PDF; leave empty to remove):`
+                : selectedPiece
+                ? `Selected: ${pieceLabel(selectedPiece)}${selectedPiece.name ? ` (${selectedPiece.id})` : ""} — drag on the plot to move it`
                 : patternEditMode
                 ? "Click a part on the plot to select it"
                 : "Enter edit mode to modify the pattern"}
             </span>
-            {patternEditMode && (merge || !toolBusy) && (
-              <span className="merge-config" title="Merge tolerances: max angle and max length difference">
-                <label>
-                  ≤
-                  <input
-                    type="number" min={0} max={90} value={mergeAngle}
-                    onChange={(e) => setMergeAngle(Number(e.target.value))}
-                  />
-                  °
-                </label>
-                <label>
-                  ±
-                  <input
-                    type="number" min={0} max={100} value={mergeLenPct}
-                    onChange={(e) => setMergeLenPct(Number(e.target.value))}
-                  />
-                  %
-                </label>
-              </span>
-            )}
-            {patternEditMode && !toolBusy && (
-              <>
-                <button
-                  className="btn-secondary"
-                  onClick={startCut}
-                  disabled={!canCut}
-                  title={
-                    canCut
-                      ? "Cut the selected part along a line"
-                      : "Select a part with a closed outline to cut it"
-                  }
-                >
-                  ✂ Cut
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={startRotate}
-                  disabled={!canRotate}
-                  title={
-                    canRotate
-                      ? "Rotate the selected part around a point"
-                      : "Select a part with a closed outline to rotate it"
-                  }
-                >
-                  ↻ Rotate
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={startMerge}
-                  disabled={!canMerge}
-                  title={canMerge ? "Merge two parts along a line" : "Load at least two parts to merge"}
-                >
-                  ⧉ Merge
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={startSpecify}
-                  disabled={!canSpecify}
-                  title="Set a line's type (seam allowance) and merge marker"
-                >
-                  ✎ Specify line
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={startSmooth}
-                  disabled={!canSmooth}
-                  title="Replace consecutive outline lines by one smooth curve"
-                >
-                  〰 Smooth
-                </button>
-              </>
-            )}
-            {smooth && (
-              <>
-                <button
-                  className="btn-primary"
-                  onClick={commitSmooth}
-                  disabled={!smoothCurve}
-                  title={smoothCurve ? "Replace the selected lines by the previewed curve" : "Select ≥ 2 consecutive lines first"}
-                >
-                  Smooth now
-                </button>
-                <button className="btn-secondary" onClick={() => setSmooth(null)} title="Cancel smoothing">
-                  Abort smoothing
-                </button>
-              </>
-            )}
-            {specify && (
-              <>
-                {specify.sel && (
-                  <>
-                    <label className="specify-field">
-                      Line type
-                      <select
-                        value={specify.allowance}
-                        onChange={(e) =>
-                          setSpecify((s) => (s ? { ...s, allowance: e.target.value as AllowanceType } : s))
-                        }
-                      >
-                        {ALLOWANCE_TYPES.map((a) => (
-                          <option key={a} value={a}>
-                            {a} ({ALLOWANCE_MM[a] > 10 ? `${ALLOWANCE_MM[a] / 10} cm` : `${ALLOWANCE_MM[a]} mm`})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="specify-field">
-                      Merge marker
-                      <select
-                        value={specify.marker ?? ""}
-                        onChange={(e) =>
-                          setSpecify((s) =>
-                            s ? { ...s, marker: e.target.value === "" ? null : (e.target.value as MergeMarker) } : s
-                          )
-                        }
-                      >
-                        <option value="">— none —</option>
-                        {MERGE_MARKERS.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <button className="btn-primary" onClick={applySpecify} title="Store this line specification">
-                      Apply
-                    </button>
-                  </>
-                )}
-                <button className="btn-secondary" onClick={() => setSpecify(null)} title="Leave line specification">
-                  Done
-                </button>
-              </>
-            )}
-            {merge && (
-              <>
-                {merge.sel && merge.cand && (
-                  <>
-                    <button className="btn-secondary" onClick={pullTogether} title="Move the parts together to align the lines">
-                      Pull together
-                    </button>
-                    <button className="btn-primary" onClick={mergeNow} title="Merge the two parts into one">
-                      Merge now
-                    </button>
-                  </>
-                )}
-                <button className="btn-secondary" onClick={abortMerge} title="Cancel the merge">
-                  Abort merge
-                </button>
-              </>
-            )}
-            {cut && (
-              <>
-                <span className="cut-mode-switch" role="group" aria-label="Cut sub-mode">
-                  <button
-                    className={cut.mode === "draw" ? "active" : ""}
-                    onClick={() => setCutMode("draw")}
-                    title="Draw the cut line (start/end snap to marks)"
-                  >
-                    ✂ Cut line
-                  </button>
-                  <button
-                    className={cut.mode === "measure" ? "active" : ""}
-                    onClick={() => setCutMode("measure")}
-                    title="Measure distances along the outline and mark points"
-                  >
-                    📏 Measure
-                  </button>
-                </span>
-                {cut.marks.length > 0 && (
-                  <button
-                    className="btn-secondary"
-                    onClick={clearCutMarks}
-                    title="Remove all temporary marks"
-                  >
-                    Clear marks ({cut.marks.length})
-                  </button>
-                )}
-                <button
-                  className="btn-primary"
-                  onClick={commitCut}
-                  disabled={!cutValid}
-                  title={cutValid ? "Split the part in two" : "Place two points that divide the part"}
-                >
-                  Cut now
-                </button>
-                <button className="btn-secondary" onClick={abortCut} title="Cancel this cut">
-                  Abort cutting
-                </button>
-              </>
-            )}
-            {rotate && (
-              <button className="btn-secondary" onClick={abortRotate} title="Cancel this rotation">
-                Abort rotate
-              </button>
-            )}
-            <button
-              className="btn-secondary"
-              onClick={handleUndo}
-              disabled={edits.length === 0}
-              title={edits.length === 0 ? "Nothing to undo" : "Undo last edit"}
-            >
-              ↶ Undo
-            </button>
             <button
               className="btn-secondary"
               onClick={() => setPrintModalOpen(true)}
@@ -1903,63 +1971,415 @@ export default function Home() {
               🖨 Print to PDF
             </button>
           </div>
-          <div className="canvas-wrap">
-            {loadedParts.length === 0 ? (
-              <div className="subtitle">Add a part to see the pattern.</div>
-            ) : plotParts.length > 0 ? (
-              <PatternSvg
-                parts={plotParts}
-                showAuxLines={showAuxLines}
-                showPoints={showPoints}
-                selectedPart={selectedPlotPart}
-                highlightedPart={highlightedPart}
-                editMode={patternEditMode}
-                activePart={activePartFile}
-                onSelectPart={handlePlotSelect}
-                onMovePart={handleMovePart}
-                cut={
-                  cut
-                    ? {
-                        loop: cutLoop,
-                        phase: cutPhase,
-                        from: cut.from?.point ?? null,
-                        to: cut.to?.point ?? null,
-                        preview: cutPreview,
-                        controls: cutControls,
-                        mode: cut.mode,
-                        marks: cut.marks.map((m) => m.point),
-                        onAddMark: handleAddCutMark,
-                        onPlace: handleCutPlace,
-                        onMoveEnd: handleCutMoveEnd,
-                        onMoveControl: handleCutMoveControl,
-                      }
-                    : null
-                }
-                rotate={
-                  rotate
-                    ? {
-                        loop: rotateLoop,
-                        partId: rotate.part,
-                        center: rotate.center?.point ?? null,
-                        onPickCenter: handleRotateCenter,
-                        onCommit: handleRotateCommit,
-                      }
-                    : null
-                }
-                merge={
-                  merge
-                    ? { segments: mergeOverlaySegs, onPick: handleMergePick }
-                    : specify
-                    ? { segments: specifyOverlaySegs, onPick: handleSpecifyPick }
-                    : smooth
-                    ? { segments: smoothOverlaySegs, onPick: handleSmoothPick }
-                    : null
-                }
-                allowances={allowanceByPiece}
-              />
-            ) : (
-              <div className="subtitle">Fix the part JSON to see the pattern.</div>
+          {define && (
+            <div className={`define-panel${define.mode === "formula" ? " formula" : ""}`}>
+              <div className="define-measures">
+                <div className="define-measures-head">
+                  <strong>Measurements</strong>
+                  {define.measures.length > 0 && (
+                    <button
+                      className="btn-secondary btn-small"
+                      onClick={() => setDefine((d) => (d ? { ...d, measures: d.measures.slice(0, -1) } : d))}
+                      title="Remove the last measurement"
+                    >
+                      ↶ Remove {define.measures[define.measures.length - 1].name}
+                    </button>
+                  )}
+                </div>
+                {define.measures.length === 0 ? (
+                  <p className="subtitle">None yet — the template uses 10 cm × 3 cm.</p>
+                ) : (
+                  <ul>
+                    {define.measures.map((m) => (
+                      <li key={m.name}>
+                        <code>{m.name}</code> = {(defineValues[m.name] ?? m.value).toFixed(2)} cm{" "}
+                        <span className="define-kind">
+                          {m.kind === "absolute"
+                            ? "absolute"
+                            : `relative · ${pieceLabel(plotPieces.find((p) => p.id === m.part) ?? { id: m.part })}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              {define.mode === "formula" && (
+                <div className="define-editor">
+                  <div className="define-editor-row">
+                    <label className="specify-field">
+                      Name
+                      <input
+                        className="piece-name-input"
+                        type="text"
+                        value={define.name}
+                        placeholder="e.g. Waistband"
+                        maxLength={80}
+                        onChange={(e) => setDefine((d) => (d ? { ...d, name: e.target.value } : d))}
+                      />
+                    </label>
+                    <button
+                      className="btn-secondary btn-small"
+                      onClick={() => setDefine((d) => (d ? { ...d, json: null } : d))}
+                      disabled={define.json == null}
+                      title="Replace the text by the rectangle template (uses d_1 / d_2)"
+                    >
+                      Reset to template
+                    </button>
+                    <button
+                      className="btn-primary"
+                      onClick={saveDefinedPart}
+                      disabled={!definePreview}
+                      title={definePreview ? "Add this part to the pattern (undoable)" : "Fix the definition first"}
+                    >
+                      Save part
+                    </button>
+                  </div>
+                  <textarea
+                    className="define-json"
+                    spellCheck={false}
+                    value={defineText}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setDefine((d) => (d ? { ...d, json: v } : d));
+                    }}
+                  />
+                  {defineParsed?.error && <div className="modal-error">{defineParsed.error}</div>}
+                  {!defineParsed?.error && !definePreview && (
+                    <div className="modal-error">The definition produces no drawable geometry.</div>
+                  )}
+                  {defineEvalErrors.length > 0 && (
+                    <div className="modal-error">
+                      {defineEvalErrors.slice(0, 4).map(([k, v]) => (
+                        <div key={k}>{k}: {v}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="plot-body">
+            {patternEditMode && (
+              <aside className={`edit-bar${editBarCollapsed ? " collapsed" : ""}`} aria-label="Edit tools">
+                <button
+                  className="edit-bar-toggle"
+                  onClick={toggleEditBar}
+                  title={editBarCollapsed ? "Expand the edit tools" : "Collapse the edit tools"}
+                  aria-expanded={!editBarCollapsed}
+                >
+                  {editBarCollapsed ? "»" : "« Edit tools"}
+                </button>
+                {editTools.map((t) => (
+                  <button
+                    key={t.key}
+                    className={`edit-tool${t.active ? " active" : ""}${t.danger ? " danger" : ""}`}
+                    onClick={t.onClick}
+                    disabled={!t.enabled && !t.active}
+                    title={t.title}
+                  >
+                    <span className="edit-tool-icon" aria-hidden>{t.icon}</span>
+                    {!editBarCollapsed && <span className="edit-tool-label">{t.label}</span>}
+                  </button>
+                ))}
+                <div className="edit-bar-sep" />
+                <button
+                  className="edit-tool"
+                  onClick={handleUndo}
+                  disabled={edits.length === 0}
+                  title={edits.length === 0 ? "Nothing to undo" : "Undo last edit"}
+                >
+                  <span className="edit-tool-icon" aria-hidden>↶</span>
+                  {!editBarCollapsed && <span className="edit-tool-label">Undo</span>}
+                </button>
+                {/* Controls of the active tool, stacked vertically. */}
+                {!editBarCollapsed && toolBusy && (
+                  <div className="edit-options">
+                    {define && (
+                      <>
+                        <span className="cut-mode-switch" role="group" aria-label="Define-line sub-mode">
+                          <button
+                            className={define.mode === "measure" ? "active" : ""}
+                            onClick={() => setDefine((d) => (d ? { ...d, mode: "measure" } : d))}
+                            title="Measure distances along outlines (d_1, d_2, …)"
+                          >
+                            📏 Measure
+                          </button>
+                          <button
+                            className={define.mode === "formula" ? "active" : ""}
+                            onClick={() => setDefine((d) => (d ? { ...d, mode: "formula" } : d))}
+                            title="Define the new part by a JSON formula"
+                          >
+                            ƒ Define part by formula
+                          </button>
+                        </span>
+                        {define.mode === "measure" && (
+                          <span className="cut-mode-switch" role="group" aria-label="Measure kind">
+                            <button
+                              className={define.kind === "absolute" ? "active" : ""}
+                              onClick={() => setDefine((d) => (d ? { ...d, kind: "absolute" } : d))}
+                              title="Store the measured length as a fixed number"
+                            >
+                              Absolute
+                            </button>
+                            <button
+                              className={define.kind === "relative" ? "active" : ""}
+                              onClick={() => setDefine((d) => (d ? { ...d, kind: "relative" } : d))}
+                              title="Store the measured points' positions (t) on their lines — the length follows when measurements change"
+                            >
+                              Relative
+                            </button>
+                          </span>
+                        )}
+                        <button className="btn-secondary" onClick={() => setDefine(null)} title="Leave without adding a part">
+                          Abort
+                        </button>
+                      </>
+                    )}
+                    {naming && (
+                      <>
+                        <input
+                          className="piece-name-input"
+                          type="text"
+                          autoFocus
+                          value={naming.value}
+                          placeholder={naming.part}
+                          maxLength={80}
+                          onChange={(e) => setNaming((n) => (n ? { ...n, value: e.target.value } : n))}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitNaming();
+                            else if (e.key === "Escape") setNaming(null);
+                          }}
+                        />
+                        <button className="btn-primary" onClick={commitNaming} title="Save the name (Enter)">
+                          Save name
+                        </button>
+                        <button className="btn-secondary" onClick={() => setNaming(null)} title="Cancel (Esc)">
+                          Cancel
+                        </button>
+                      </>
+                    )}
+                    {smooth && (
+                      <>
+                        <button
+                          className="btn-primary"
+                          onClick={commitSmooth}
+                          disabled={!smoothCurve}
+                          title={smoothCurve ? "Replace the selected lines by the previewed curve" : "Select ≥ 2 consecutive lines first"}
+                        >
+                          Smooth now
+                        </button>
+                        <button className="btn-secondary" onClick={() => setSmooth(null)} title="Cancel smoothing">
+                          Abort smoothing
+                        </button>
+                      </>
+                    )}
+                    {specify && (
+                      <>
+                        {specify.sel && (
+                          <>
+                            <label className="specify-field">
+                              Line type
+                              <select
+                                value={specify.lineType}
+                                onChange={(e) =>
+                                  setSpecify((s) => (s ? { ...s, lineType: e.target.value as LineType } : s))
+                                }
+                              >
+                                {LINE_TYPES.map((lt) => (
+                                  <option key={lt} value={lt}>
+                                    {lt} (allowance: {formatAllowance(allowanceTypeOf(lt))})
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="specify-field">
+                              Allowance type
+                              <span className="specify-derived" title="Follows from the line type">
+                                {allowanceTypeOf(specify.lineType)}
+                              </span>
+                            </label>
+                            <label className="specify-field">
+                              Merge marker
+                              <select
+                                value={specify.marker ?? ""}
+                                onChange={(e) =>
+                                  setSpecify((s) =>
+                                    s ? { ...s, marker: e.target.value === "" ? null : (e.target.value as MergeMarker) } : s
+                                  )
+                                }
+                              >
+                                <option value="">— none —</option>
+                                {MERGE_MARKERS.map((m) => (
+                                  <option key={m} value={m}>{m}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <button className="btn-primary" onClick={applySpecify} title="Store this line specification">
+                              Apply
+                            </button>
+                          </>
+                        )}
+                        <button className="btn-secondary" onClick={() => setSpecify(null)} title="Leave line specification">
+                          Done
+                        </button>
+                      </>
+                    )}
+                    {merge && (
+                      <>
+                        {merge.sel && merge.cand && (
+                          <>
+                            <button className="btn-secondary" onClick={pullTogether} title="Move the parts together to align the lines">
+                              Pull together
+                            </button>
+                            <button className="btn-primary" onClick={mergeNow} title="Merge the two parts into one">
+                              Merge now
+                            </button>
+                          </>
+                        )}
+                        <button className="btn-secondary" onClick={abortMerge} title="Cancel the merge">
+                          Abort merge
+                        </button>
+                      </>
+                    )}
+                    {cut && (
+                      <>
+                        <span className="cut-mode-switch" role="group" aria-label="Cut sub-mode">
+                          <button
+                            className={cut.mode === "draw" ? "active" : ""}
+                            onClick={() => setCutMode("draw")}
+                            title="Draw the cut line (start/end snap to marks)"
+                          >
+                            ✂ Cut line
+                          </button>
+                          <button
+                            className={cut.mode === "measure" ? "active" : ""}
+                            onClick={() => setCutMode("measure")}
+                            title="Measure distances along the outline and mark points"
+                          >
+                            📏 Measure
+                          </button>
+                        </span>
+                        {cut.marks.length > 0 && (
+                          <button
+                            className="btn-secondary"
+                            onClick={clearCutMarks}
+                            title="Remove all temporary marks"
+                          >
+                            Clear marks ({cut.marks.length})
+                          </button>
+                        )}
+                        <button
+                          className="btn-primary"
+                          onClick={commitCut}
+                          disabled={!cutValid}
+                          title={cutValid ? "Split the part in two" : "Place two points that divide the part"}
+                        >
+                          Cut now
+                        </button>
+                        <button className="btn-secondary" onClick={abortCut} title="Cancel this cut">
+                          Abort cutting
+                        </button>
+                      </>
+                    )}
+                    {rotate && (
+                      <button className="btn-secondary" onClick={abortRotate} title="Cancel this rotation">
+                        Abort rotate
+                      </button>
+                    )}
+                    {merge && (
+                      <span className="merge-config" title="Merge tolerances: max angle and max length difference">
+                        <label>
+                          ≤
+                          <input
+                            type="number" min={0} max={90} value={mergeAngle}
+                            onChange={(e) => setMergeAngle(Number(e.target.value))}
+                          />
+                          °
+                        </label>
+                        <label>
+                          ±
+                          <input
+                            type="number" min={0} max={100} value={mergeLenPct}
+                            onChange={(e) => setMergeLenPct(Number(e.target.value))}
+                          />
+                          %
+                        </label>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </aside>
             )}
+            <div className="canvas-wrap">
+              {loadedParts.length === 0 ? (
+                <div className="subtitle">Add a part to see the pattern.</div>
+              ) : plotParts.length > 0 ? (
+                <PatternSvg
+                  parts={plotParts}
+                  showAuxLines={showAuxLines}
+                  showPoints={showPoints}
+                  selectedPart={selectedPlotPart}
+                  highlightedPart={highlightedPart}
+                  editMode={patternEditMode}
+                  activePart={activePartFile}
+                  onSelectPart={handlePlotSelect}
+                  onMovePart={handleMovePart}
+                  cut={
+                    cut
+                      ? {
+                          loop: cutLoop,
+                          phase: cutPhase,
+                          from: cut.from?.point ?? null,
+                          to: cut.to?.point ?? null,
+                          preview: cutPreview,
+                          controls: cutControls,
+                          mode: cut.mode,
+                          marks: cut.marks.map((m) => m.point),
+                          onAddMark: handleAddCutMark,
+                          onPlace: handleCutPlace,
+                          onMoveEnd: handleCutMoveEnd,
+                          onMoveControl: handleCutMoveControl,
+                        }
+                      : null
+                  }
+                  rotate={
+                    rotate
+                      ? {
+                          loop: rotateLoop,
+                          partId: rotate.part,
+                          center: rotate.center?.point ?? null,
+                          onPickCenter: handleRotateCenter,
+                          onCommit: handleRotateCommit,
+                        }
+                      : null
+                  }
+                  merge={
+                    merge
+                      ? { segments: mergeOverlaySegs, onPick: handleMergePick }
+                      : specify
+                      ? { segments: specifyOverlaySegs, onPick: handleSpecifyPick }
+                      : smooth
+                      ? { segments: smoothOverlaySegs, onPick: handleSmoothPick }
+                      : null
+                  }
+                  allowances={allowanceByPiece}
+                  define={
+                    define
+                      ? {
+                          mode: define.mode,
+                          loops: defineLoops,
+                          marks: define.measures.map((m) => ({ name: m.name, point: m.point })),
+                          nextName: nextMeasureName,
+                          onMeasured: handleDefineMeasured,
+                          preview: definePreview,
+                        }
+                      : null
+                  }
+                />
+              ) : (
+                <div className="subtitle">Fix the part JSON to see the pattern.</div>
+              )}
+            </div>
           </div>
         </div>
         {loadedParts.length > 0 && <InspectorPanel geometry={merged} />}

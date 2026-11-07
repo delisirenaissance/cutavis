@@ -119,15 +119,83 @@ const boxesOverlap = (a: Box, b: Box): boolean =>
 
 const boxSize = (b: Box): number => Math.max(b.maxX - b.minX, b.maxY - b.minY);
 
+/** A cubic whose control points lie on its chord (within `tol`) is a straight
+ *  segment. A zero-length "curve" counts as straight too. */
+function isStraight(b: Bezier, tol: number): boolean {
+  const dx = b[3].x - b[0].x, dy = b[3].y - b[0].y;
+  const L = Math.hypot(dx, dy);
+  const off = (p: Vec2) => (L === 0 ? Math.hypot(p.x - b[0].x, p.y - b[0].y) : Math.abs((p.x - b[0].x) * dy - (p.y - b[0].y) * dx) / L);
+  if (off(b[1]) > tol || off(b[2]) > tol) return false;
+  if (L === 0) return true;
+  // Controls must also lie within the segment (no overshoot beyond the ends).
+  const along = (p: Vec2) => ((p.x - b[0].x) * dx + (p.y - b[0].y) * dy) / (L * L);
+  return [b[1], b[2]].every((p) => along(p) >= -1e-9 && along(p) <= 1 + 1e-9);
+}
+
+/**
+ * Exact intersection of segments p1p2 and q1q2. Crossing/touching → that
+ * point. Collinear and overlapping → both ends of the overlap plus its
+ * midpoint (so callers that ignore hits at their own endpoints still notice
+ * an overlap). Disjoint/parallel → none.
+ */
+function intersectSegments(p1: Vec2, p2: Vec2, q1: Vec2, q2: Vec2, tol: number): Vec2[] {
+  const r = { x: p2.x - p1.x, y: p2.y - p1.y };
+  const s = { x: q2.x - q1.x, y: q2.y - q1.y };
+  const qp = { x: q1.x - p1.x, y: q1.y - p1.y };
+  const rr = r.x * r.x + r.y * r.y;
+  const ss = s.x * s.x + s.y * s.y;
+  const cross = r.x * s.y - r.y * s.x;
+  const lr = Math.sqrt(rr), ls = Math.sqrt(ss);
+
+  // Degenerate (point) segments.
+  const distToSeg = (p: Vec2, a: Vec2, v: { x: number; y: number }, vv: number) => {
+    const t = vv > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * v.x + (p.y - a.y) * v.y) / vv)) : 0;
+    return Math.hypot(p.x - (a.x + t * v.x), p.y - (a.y + t * v.y));
+  };
+  if (lr <= tol && ls <= tol) return Math.hypot(qp.x, qp.y) <= tol ? [{ ...p1 }] : [];
+  if (lr <= tol) return distToSeg(p1, q1, s, ss) <= tol ? [{ ...p1 }] : [];
+  if (ls <= tol) return distToSeg(q1, p1, r, rr) <= tol ? [{ ...q1 }] : [];
+
+  if (Math.abs(cross) > tol * Math.max(lr, ls)) {
+    // Not parallel: unique crossing, if within both segments (with tolerance).
+    const t = (qp.x * s.y - qp.y * s.x) / cross;
+    const u = (qp.x * r.y - qp.y * r.x) / cross;
+    const et = tol / lr, eu = tol / ls;
+    if (t < -et || t > 1 + et || u < -eu || u > 1 + eu) return [];
+    return [{ x: p1.x + t * r.x, y: p1.y + t * r.y }];
+  }
+  // Parallel: collinear only if q1 lies on p's line.
+  if (Math.abs(qp.x * r.y - qp.y * r.x) / lr > tol) return [];
+  const t0 = (qp.x * r.x + qp.y * r.y) / rr;
+  const t1 = ((q2.x - p1.x) * r.x + (q2.y - p1.y) * r.y) / rr;
+  const lo = Math.max(0, Math.min(t0, t1));
+  const hi = Math.min(1, Math.max(t0, t1));
+  const at = (t: number) => ({ x: p1.x + t * r.x, y: p1.y + t * r.y });
+  if (hi < lo - tol / lr) return []; // collinear but apart
+  if ((hi - lo) * lr <= tol) return [at((lo + hi) / 2)]; // touching end to end
+  return [at(lo), at((lo + hi) / 2), at(hi)];
+}
+
 /**
  * Find every point where two cubic Béziers cross, via recursive subdivision.
  * `tol` is the positional tolerance in geometry units. Returned points are
  * de-duplicated so a single crossing yields a single point.
  */
 export function intersectBeziers(a: Bezier, b: Bezier, tol = 1e-6): Vec2[] {
+  // Two straight segments (the common case: [A,A,B,B] lines): exact
+  // intersection, no subdivision. Subdividing two COINCIDENT segments produced
+  // ~length/tol "crossings" (a million for tol = 1e-6·size), and the quadratic
+  // de-duplication below then froze the browser — e.g. merge-candidate bridges
+  // running along an edge of a part that had been aligned flush.
+  if (isStraight(a, tol) && isStraight(b, tol)) return intersectSegments(a[0], a[3], b[0], b[3], tol);
+
   const hits: Vec2[] = [];
+  // Safety budget for curves that (partly) coincide: stop subdividing once
+  // this many hits exist — a real crossing set is far smaller.
+  const MAX_HITS = 256;
 
   const recurse = (c1: Bezier, c2: Bezier, depth: number): void => {
+    if (hits.length >= MAX_HITS) return;
     const box1 = bezierBox(c1);
     const box2 = bezierBox(c2);
     if (!boxesOverlap(box1, box2)) return;

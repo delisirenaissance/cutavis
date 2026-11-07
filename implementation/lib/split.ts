@@ -237,20 +237,36 @@ export function extractOuterBoundary(segs: BoundarySeg[]): OuterBoundary {
     }
   }
 
+  // A closed outline has TWO faces through the seed with the same |area|: the
+  // inside and the outside, i.e. the same corners traced in opposite
+  // directions. Picking one by `a > bestArea` let floating-point rounding
+  // decide, so the loop direction flipped at random measurement values — and
+  // with it the stored direction of lines in merged/smoothed pieces (cut
+  // anchors then landed mirrored). Compare areas with a relative tolerance and
+  // prefer POSITIVE orientation among ties; if only a negative one is best,
+  // reverse it. Positive is what the old code returned in the common case, so
+  // existing saved edits keep their meaning.
   let best: HalfEdge[] | null = null;
   let bestArea = 0;
+  let bestSigned = 0;
   for (const he of outByV[seed]) {
     const loop = traceFace(he);
     if (!loop) continue;
-    const a = Math.abs(faceArea(loop));
-    if (a > bestArea) { bestArea = a; best = loop; }
+    const s = faceArea(loop);
+    const a = Math.abs(s);
+    const tol = Math.max(a, bestArea) * 1e-9;
+    if (a > bestArea + tol || (Math.abs(a - bestArea) <= tol && s > 0 && bestSigned < 0)) {
+      bestArea = a; best = loop; bestSigned = s;
+    }
   }
 
   if (!best || bestArea <= eps * eps) {
     return { ok: false, reason: "seam/hem lines don't enclose a closed area", loop: [] };
   }
 
-  return { ok: true, loop: best.map((he) => he.seg) };
+  // Normalise to positive orientation (walk the twins in reverse order).
+  const oriented = bestSigned >= 0 ? best : [...best].reverse().map((he) => he.twin);
+  return { ok: true, loop: oriented.map((he) => he.seg) };
 }
 
 // ── Snapping a click onto the outline ─────────────────────────────────────────

@@ -425,6 +425,12 @@ h2:first-child {
   cursor: default;
 }
 
+/* Destructive action (e.g. delete part): red on hover. */
+.btn-secondary.btn-danger:hover:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+}
+
 /* Specify-line dropdowns in the plot toolbar. */
 .specify-field {
   display: inline-flex;
@@ -441,6 +447,120 @@ h2:first-child {
   border-radius: 6px;
   padding: 5px 6px;
   font-size: 12px;
+}
+
+/* "Define part" panel between the plot toolbar and the plot. */
+.define-panel {
+  display: flex;
+  gap: 16px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  max-height: 46vh;
+}
+
+.define-measures {
+  min-width: 220px;
+  overflow-y: auto;
+}
+
+.define-measures-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.define-measures ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.define-measures code {
+  color: #c77dff;
+  font-weight: 700;
+}
+
+.define-kind {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.define-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.define-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.define-json {
+  flex: 1;
+  min-height: 220px;
+  width: 100%;
+  resize: vertical;
+  background: #0f1115;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.define-json:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.btn-small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* Display name next to a piece id in the part lists. */
+.piece-display-name {
+  color: var(--accent);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* Inline "name this piece" field in the plot toolbar. */
+.piece-name-input {
+  background: #0f1115;
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  min-width: 220px;
+}
+
+.piece-name-input:focus {
+  outline: none;
+}
+
+.specify-derived {
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  padding: 5px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
 }
 
 /* Cut sub-mode toggle (draw cut line / measure). */
@@ -801,6 +921,152 @@ svg {
   border: none;
   border-top: 1px solid var(--border);
   margin: 16px 0 4px;
+}
+
+/* ── Edit-tools sidebar (left of the plot, edit mode) ─────────────────── */
+
+.plot-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 8px;
+}
+
+.plot-body .canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.edit-bar {
+  flex: 0 0 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-y: auto;
+  transition: flex-basis 0.15s;
+}
+
+.edit-bar.collapsed {
+  flex-basis: 46px;
+}
+
+.edit-bar-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: left;
+  padding: 4px 6px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.edit-bar.collapsed .edit-bar-toggle {
+  text-align: center;
+  font-size: 14px;
+}
+
+.edit-bar-toggle:hover {
+  color: var(--text);
+}
+
+.edit-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.edit-bar.collapsed .edit-tool {
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.edit-tool-icon {
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.edit-tool:hover:not(:disabled) {
+  border-color: var(--border);
+  background: rgba(110, 168, 254, 0.08);
+}
+
+.edit-tool.active {
+  border-color: var(--accent);
+  background: rgba(110, 168, 254, 0.18);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.edit-tool.danger:hover:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.edit-tool:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.edit-bar-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px;
+}
+
+/* Controls of the active tool, stacked vertically under the tool list. */
+.edit-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.edit-options > button,
+.edit-options > .cut-mode-switch,
+.edit-options > .piece-name-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.edit-options .cut-mode-switch button {
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 12px;
+}
+
+.edit-options .specify-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.edit-options .specify-field select {
+  width: 100%;
+}
+
+.edit-options .merge-config {
+  display: flex;
+  justify-content: space-between;
 }
 
 .merge-config {

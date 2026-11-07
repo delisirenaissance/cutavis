@@ -10,6 +10,673 @@
       "part": "basicSkirt_backPart",
       "dx": 3.875,
       "dy": 0
+    },
+    {
+      "type": "split",
+      "part": "basicSkirt_backPart",
+      "from": {
+        "line": "L12",
+        "t": 0.4175
+      },
+      "to": {
+        "line": "L17",
+        "t": 0.34
+      },
+      "bow": {
+        "c1": [
+          0.6050894714366307,
+          -0.10793522189529246
+        ],
+        "c2": [
+          0.6961611403648887,
+          -0.06776737114852033
+        ]
+      }
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart_1",
+      "dx": 0,
+      "dy": -2.625,
+      "rel": {
+        "other": "basicSkirt_backPart_3",
+        "lineA": "L27",
+        "tA": 0.5,
+        "lineB": "L28",
+        "tB": 1,
+        "gap": {
+          "x": -1.6318694755570249,
+          "y": -0.2898516327214261
+        }
+      }
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart_3",
+      "dx": -0.625,
+      "dy": -2.75,
+      "rel": {
+        "other": "basicSkirt_backPart_1",
+        "lineA": "L28",
+        "tA": 0.5,
+        "lineB": "L27",
+        "tB": 0.5,
+        "gap": {
+          "x": 0.8346043614844874,
+          "y": -0.06757909103265913
+        }
+      }
+    },
+    {
+      "type": "rotate",
+      "part": "basicSkirt_backPart_3",
+      "center": {
+        "line": "L28",
+        "t": 0.025
+      },
+      "angle": -0.1495684111915031
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart_4",
+      "dx": -1.25,
+      "dy": -4,
+      "rel": {
+        "other": "basicSkirt_backPart_3",
+        "lineA": "L24",
+        "tA": 0.5,
+        "lineB": "L25",
+        "tB": 0.5175,
+        "gap": {
+          "x": 2.09531830269259,
+          "y": -0.5243750455611771
+        }
+      }
+    },
+    {
+      "type": "rotate",
+      "part": "basicSkirt_backPart_4",
+      "center": {
+        "line": "L24",
+        "t": 0.04
+      },
+      "angle": -0.35958795740875193
+    },
+    {
+      "type": "merge",
+      "partA": "basicSkirt_backPart_3",
+      "lineA": "L28",
+      "partB": "basicSkirt_backPart_1",
+      "lineB": "L27"
+    },
+    {
+      "type": "merge",
+      "partA": "basicSkirt_backPart_3&basicSkirt_backPart_1",
+      "lineA": "L25",
+      "partB": "basicSkirt_backPart_4",
+      "lineB": "L24"
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_backPart_3",
+      "dx": -1,
+      "dy": -0.375,
+      "rel": {
+        "other": "basicSkirt_backPart_1",
+        "lineA": "L15",
+        "tA": 0.5,
+        "lineB": "L14",
+        "tB": 0.4975,
+        "gap": {
+          "x": 1.8157039886758781,
+          "y": -0.267999343757081
+        }
+      }
+    },
+    {
+      "type": "rotate",
+      "part": "basicSkirt_backPart_3",
+      "center": {
+        "line": "L15",
+        "t": 0.035
+      },
+      "angle": -0.32013503398854637
+    },
+    {
+      "type": "merge",
+      "partA": "basicSkirt_backPart_3",
+      "lineA": "L15",
+      "partB": "basicSkirt_backPart_1",
+      "lineB": "L14"
+    },
+    {
+      "type": "smooth",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1&basicSkirt_backPart_4",
+      "lines": [
+        "L30",
+        "merge#2",
+        "L29",
+        "merge#3",
+        "L26"
+      ]
+    },
+    {
+      "type": "smooth",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1&basicSkirt_backPart_4",
+      "lines": [
+        "cut#3",
+        "merge#4",
+        "cut",
+        "merge",
+        "cut#2"
+      ]
+    },
+    {
+      "type": "smooth",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1",
+      "lines": [
+        "cut",
+        "merge",
+        "cut#2"
+      ]
+    },
+    {
+      "type": "split",
+      "part": "basicSkirt_frontPart",
+      "from": {
+        "line": "L22",
+        "t": 0.755
+      },
+      "to": {
+        "line": "L11",
+        "t": 0.42
+      },
+      "bow": {
+        "c1": [
+          0.2985698691375721,
+          0.01915026411556784
+        ],
+        "c2": [
+          0.6496964262947473,
+          0.02688934337350333
+        ]
+      }
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_frontPart_1",
+      "dx": -0.2500027499256347,
+      "dy": -2.3750261242935298,
+      "rel": {
+        "other": "basicSkirt_frontPart_3",
+        "lineA": "L8",
+        "tA": 0.5,
+        "lineB": "L7",
+        "tB": 0.8425,
+        "gap": {
+          "x": -1.5120463348875042,
+          "y": -0.12774480588994397
+        }
+      }
+    },
+    {
+      "type": "translate",
+      "part": "basicSkirt_frontPart_3",
+      "dx": -0.37500412488845203,
+      "dy": -2.3750261242935298,
+      "rel": {
+        "other": "basicSkirt_frontPart_1",
+        "lineA": "L7",
+        "tA": 0.5,
+        "lineB": "L8",
+        "tB": 0.5075,
+        "gap": {
+          "x": 0.9455610005620372,
+          "y": -0.07963636209636654
+        }
+      }
+    },
+    {
+      "type": "rotate",
+      "part": "basicSkirt_frontPart_3",
+      "center": {
+        "line": "cut",
+        "t": 1
+      },
+      "angle": -0.18548761681339887
+    },
+    {
+      "type": "merge",
+      "partA": "basicSkirt_frontPart_1",
+      "lineA": "L8",
+      "partB": "basicSkirt_frontPart_3",
+      "lineB": "L7"
+    },
+    {
+      "type": "smooth",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1",
+      "lines": [
+        "L13",
+        "merge#2",
+        "L16"
+      ]
+    },
+    {
+      "type": "smooth",
+      "part": "basicSkirt_frontPart_1&basicSkirt_frontPart_3",
+      "lines": [
+        "cut#2",
+        "merge#2",
+        "cut"
+      ]
+    },
+    {
+      "type": "smooth",
+      "part": "basicSkirt_frontPart_1&basicSkirt_frontPart_3",
+      "lines": [
+        "L23",
+        "merge",
+        "L9"
+      ]
+    },
+    {
+      "type": "smooth",
+      "part": "basicSkirt_frontPart_2",
+      "lines": [
+        "cut",
+        "L8",
+        "L7",
+        "cut#2"
+      ]
+    },
+    {
+      "type": "lineSpec",
+      "part": "basicSkirt_frontPart_1&basicSkirt_frontPart_3",
+      "line": "L22",
+      "lineType": "fold",
+      "allowance": "fold-no-allowance",
+      "marker": null
+    },
+    {
+      "type": "lineSpec",
+      "part": "basicSkirt_frontPart_2",
+      "line": "L22",
+      "lineType": "fold",
+      "allowance": "fold-no-allowance",
+      "marker": null
+    },
+    {
+      "type": "lineSpec",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1&basicSkirt_backPart_4",
+      "line": "L17",
+      "lineType": "fold",
+      "allowance": "fold-no-allowance",
+      "marker": null
+    },
+    {
+      "type": "lineSpec",
+      "part": "basicSkirt_backPart_2",
+      "line": "L17",
+      "lineType": "fold",
+      "allowance": "fold-no-allowance",
+      "marker": null
+    },
+    {
+      "type": "lineSpec",
+      "part": "basicSkirt_frontPart_2",
+      "line": "L21",
+      "lineType": "maxi-allowance-hem",
+      "allowance": "maxi-allowance-hem",
+      "marker": null
+    },
+    {
+      "type": "lineSpec",
+      "part": "basicSkirt_backPart_2",
+      "line": "L18",
+      "lineType": "maxi-allowance-hem",
+      "allowance": "maxi-allowance-hem",
+      "marker": null
+    },
+    {
+      "type": "rename",
+      "part": "basicSkirt_frontPart_2",
+      "name": "front part"
+    },
+    {
+      "type": "rename",
+      "part": "basicSkirt_backPart_2",
+      "name": "back part"
+    },
+    {
+      "type": "split",
+      "part": "basicSkirt_frontPart_1&basicSkirt_frontPart_3",
+      "from": {
+        "line": "L22",
+        "t": 0.48
+      },
+      "to": {
+        "line": "L11",
+        "t": 0.3075
+      },
+      "bow": {
+        "c1": [
+          0.3937632749767842,
+          0.045009969147334815
+        ],
+        "c2": [
+          0.6160079107927298,
+          0.07180202384158559
+        ]
+      }
+    },
+    {
+      "type": "delete",
+      "part": "basicSkirt_frontPart_1&basicSkirt_frontPart_3_1"
+    },
+    {
+      "type": "split",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1&basicSkirt_backPart_4",
+      "from": {
+        "line": "L12",
+        "t": 0.69
+      },
+      "to": {
+        "line": "L17",
+        "t": 0.375
+      },
+      "bow": {
+        "c1": [
+          0.3929709769039607,
+          0.06951158940478662
+        ],
+        "c2": [
+          0.5355165986410485,
+          0.08201068316719275
+        ]
+      }
+    },
+    {
+      "type": "delete",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1&basicSkirt_backPart_4_1"
+    },
+    {
+      "type": "definePart",
+      "part": "defined_1",
+      "def": {
+        "local_variables": {
+          "width": "d_1",
+          "height": "2.5"
+        },
+        "points": {
+          "A": {
+            "x": "0",
+            "y": "0",
+            "pointType": "marker",
+            "position": "top-left"
+          },
+          "B": {
+            "x": "width",
+            "y": "0",
+            "pointType": "marker",
+            "position": "top-right"
+          },
+          "C": {
+            "x": "width",
+            "y": "height",
+            "pointType": "marker",
+            "position": "bottom-right"
+          },
+          "D": {
+            "x": "0",
+            "y": "height",
+            "pointType": "marker",
+            "position": "bottom-left"
+          }
+        },
+        "lines": {
+          "L1": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "A",
+              "A",
+              "B",
+              "B"
+            ]
+          },
+          "L2": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "B",
+              "B",
+              "C",
+              "C"
+            ]
+          },
+          "L3": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "C",
+              "C",
+              "D",
+              "D"
+            ]
+          },
+          "L4": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "D",
+              "D",
+              "A",
+              "A"
+            ]
+          }
+        }
+      },
+      "measures": [
+        {
+          "name": "d_1",
+          "kind": "relative",
+          "value": 21.03002510821588,
+          "part": "basicSkirt_frontPart_1&basicSkirt_frontPart_3_2",
+          "from": {
+            "line": "L22",
+            "t": 1
+          },
+          "to": {
+            "line": "L11",
+            "t": 0
+          }
+        }
+      ],
+      "at": {
+        "x": 58.875,
+        "y": -3.983393549408449
+      }
+    },
+    {
+      "type": "translate",
+      "part": "defined_1",
+      "dx": -58.879336573906514,
+      "dy": -3.885438454115658,
+      "rel": {
+        "other": "basicSkirt_frontPart_1&basicSkirt_frontPart_3_2",
+        "lineA": "L2",
+        "tA": 0.5,
+        "lineB": "L11",
+        "tB": 0,
+        "gap": {
+          "x": 0.5082894618926055,
+          "y": -3.6728062307320375
+        }
+      }
+    },
+    {
+      "type": "definePart",
+      "part": "defined_2",
+      "def": {
+        "local_variables": {
+          "width": "d_1",
+          "height": "2.5"
+        },
+        "points": {
+          "A": {
+            "x": "0",
+            "y": "0",
+            "pointType": "marker",
+            "position": "top-left"
+          },
+          "B": {
+            "x": "width",
+            "y": "0",
+            "pointType": "marker",
+            "position": "top-right"
+          },
+          "C": {
+            "x": "width",
+            "y": "height",
+            "pointType": "marker",
+            "position": "bottom-right"
+          },
+          "D": {
+            "x": "0",
+            "y": "height",
+            "pointType": "marker",
+            "position": "bottom-left"
+          }
+        },
+        "lines": {
+          "L1": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "A",
+              "A",
+              "B",
+              "B"
+            ]
+          },
+          "L2": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "B",
+              "B",
+              "C",
+              "C"
+            ]
+          },
+          "L3": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "C",
+              "C",
+              "D",
+              "D"
+            ]
+          },
+          "L4": {
+            "lineType": "seam",
+            "linePointReferences": [
+              "D",
+              "D",
+              "A",
+              "A"
+            ]
+          }
+        }
+      },
+      "measures": [
+        {
+          "name": "d_1",
+          "kind": "relative",
+          "value": 18.253053756104556,
+          "part": "basicSkirt_backPart_3&basicSkirt_backPart_1&basicSkirt_backPart_4_2",
+          "from": {
+            "line": "L12",
+            "t": 1
+          },
+          "to": {
+            "line": "L17",
+            "t": 0
+          }
+        }
+      ],
+      "at": {
+        "x": 58.875,
+        "y": -8.012515732390352
+      }
+    },
+    {
+      "type": "translate",
+      "part": "defined_2",
+      "dx": -36.931943392874516,
+      "dy": 0.14426540387841608,
+      "rel": {
+        "other": "defined_1",
+        "lineA": "L4",
+        "tA": 0.5,
+        "lineB": "L2",
+        "tB": 0.5375,
+        "gap": {
+          "x": 0.0035980295514690397,
+          "y": 0.003904075753416336
+        }
+      }
+    },
+    {
+      "type": "translate",
+      "part": "defined_2",
+      "dx": 0,
+      "dy": -0.2500038436897055,
+      "rel": {
+        "other": "defined_1",
+        "lineA": "L4",
+        "tA": 0.5,
+        "lineB": "L2",
+        "tB": 0.4725,
+        "gap": {
+          "x": 0.003598029551465487,
+          "y": -0.0027174241862875093
+        }
+      }
+    },
+    {
+      "type": "merge",
+      "partA": "defined_2",
+      "lineA": "L4",
+      "partB": "defined_1",
+      "lineB": "L2"
+    },
+    {
+      "type": "rename",
+      "part": "defined_2&defined_1",
+      "name": "waistband"
+    },
+    {
+      "type": "rename",
+      "part": "basicSkirt_frontPart_1&basicSkirt_frontPart_3_2",
+      "name": "front saddle"
+    },
+    {
+      "type": "rename",
+      "part": "basicSkirt_backPart_3&basicSkirt_backPart_1&basicSkirt_backPart_4_2",
+      "name": "back saddle"
+    },
+    {
+      "type": "smooth",
+      "part": "defined_2&defined_1",
+      "lines": [
+        "L1#2",
+        "merge#2",
+        "L1"
+      ]
+    },
+    {
+      "type": "smooth",
+      "part": "defined_2&defined_1",
+      "lines": [
+        "L3",
+        "merge",
+        "L3#2"
+      ]
     }
   ]
 }

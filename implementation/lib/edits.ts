@@ -15,8 +15,11 @@
 
 import type { GeometryResult } from "./geometry";
 import { splitGeometry, resolveAnchorPoint, mergeGeometryPair, type CutBow, type SplitAnchor } from "./split";
-import type { AllowanceType, MergeMarker } from "./types";
+import { allowanceTypeOf, type AllowanceType, type LineSpec, type LineType, type MergeMarker } from "./types";
 import { smoothGeometry } from "./smooth";
+import { resolveRelativeMove, type RelativeMove } from "./relativeMove";
+import { evaluateDefinedPart, measureValues, type PartMeasure } from "./definePart";
+import type { Measurements, PartDef } from "./types";
 
 /** A single, undoable edit applied to one part or (after a split) a sub-piece,
  *  identified by its piece id (`file`, or `file_1`, `file_2`, … after cuts).
@@ -26,16 +29,54 @@ import { smoothGeometry } from "./smooth";
  *  and the optional `bow` is chord-relative, so the cut survives measurement
  *  changes rather than floating off the reshaped outline. */
 export type PatternEdit =
-  | { type: "translate"; part: string; dx: number; dy: number }
+  /** Move a piece. `dx/dy` is the absolute shift; if `rel` is set, replay
+   *  instead places the piece relative to the anchored nearest other part
+   *  (so lines moved next to each other stay together after a resize), and
+   *  falls back to dx/dy if that part or a line is gone. */
+  | { type: "translate"; part: string; dx: number; dy: number; rel?: RelativeMove }
   | { type: "split"; part: string; from: SplitAnchor; to: SplitAnchor; bow?: CutBow }
   | { type: "rotate"; part: string; center: SplitAnchor; angle: number }
   | { type: "merge"; partA: string; lineA: string; partB: string; lineB: string }
-  /** Specify one line of a piece: its seam-allowance type and optional merge
-   *  marker. Later lineSpec edits on the same line override earlier ones. */
-  | { type: "lineSpec"; part: string; line: string; allowance: AllowanceType; marker: MergeMarker | null }
+  /** Specify one line of a piece: its line type (which determines the
+   *  allowance type, e.g. "fold" → "fold-no-allowance") and optional merge
+   *  marker. Later lineSpec edits on the same line override earlier ones.
+   *  Older pattern files have only `allowance` (one of seam / maxi- / mini-
+   *  allowance-hem), which is read as the line type of the same name. */
+  | {
+      type: "lineSpec";
+      part: string;
+      line: string;
+      lineType?: LineType;
+      allowance: AllowanceType;
+      marker: MergeMarker | null;
+    }
   /** Replace ≥ 2 consecutive outline lines of a piece by one fitted cubic
    *  (re-fitted on every replay, so it follows measurement changes). */
-  | { type: "smooth"; part: string; lines: string[] };
+  | { type: "smooth"; part: string; lines: string[] }
+  /** Give a piece a display name (used on the plot and in the printout).
+   *  An empty name removes it, so the piece id is shown again. */
+  | { type: "rename"; part: string; name: string }
+  /** Define a NEW part (id `part`) from a JSON part definition whose formulas
+   *  may use the measurements d_1, d_2, … (see lib/definePart.ts). Placed with
+   *  its top-left corner at `at`. */
+  | {
+      type: "definePart";
+      part: string;
+      def: PartDef;
+      measures: PartMeasure[];
+      at: { x: number; y: number };
+      name?: string;
+    }
+  /** Delete a piece (any kind: loaded part, cut piece, merged or defined
+   *  part). Undoable like every edit — undo brings it back. */
+  | { type: "delete"; part: string };
+
+/** The line spec a lineSpec edit sets. The allowance is always derived from
+ *  the line type, so a "fold" line can never carry a seam allowance. */
+function lineSpecFromEdit(e: Extract<PatternEdit, { type: "lineSpec" }>): LineSpec {
+  const lineType: LineType = e.lineType ?? (e.allowance as LineType); // legacy: allowance name == line type
+  return { lineType, allowance: allowanceTypeOf(lineType), marker: e.marker };
+}
 
 /** On-disk pattern format. `parts` lists the part files to load together;
  *  `edits` is the ordered history applied to them. */
@@ -165,6 +206,13 @@ export function applyEditsToGeometry(
 export interface PartPiece {
   id: string;
   geometry: GeometryResult;
+  /** Display name set by a `rename` edit (or inherited); absent → show `id`. */
+  name?: string;
+}
+
+/** The label to show for a piece: its display name, else its id. */
+export function pieceLabel(p: { id: string; name?: string }): string {
+  return p.name || p.id;
 }
 
 /** Id of the n-th (1-based) child created by cutting piece `parentId`. */
@@ -221,18 +269,28 @@ export function migrateEdits(edits: PatternEdit[]): PatternEdit[] {
  * interleave and reference pieces produced by earlier edits:
  *  • translate/rotate transform a piece in place,
  *  • split replaces one piece with its N children (`id_1` … `id_N`),
- *  • merge combines two pieces into one (`idA&idB`).
+ *  • merge combines two pieces into one (`idA&idB`),
+ *  • definePart adds a new piece evaluated from its JSON definition,
+ *  • delete removes a piece.
  * An edit whose target piece(s) are missing, or that can't be applied to the
  * current geometry, is skipped (graceful degradation, like unknown edit types).
+ * `vars` (body measurements etc.) is the formula scope for defined parts.
  */
-export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[]): PartPiece[] {
+export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[], vars: Measurements = {}): PartPiece[] {
   const pieces = new Map<string, GeometryResult>();
   for (const b of bases) pieces.set(b.id, b.geometry);
+  // Display names by piece id. Cut children inherit "<name> (n)", a merge
+  // "<A> + <B>" (falling back to ids) when either side is named.
+  const names = new Map<string, string>();
+  for (const b of bases) if (b.name) names.set(b.id, b.name);
 
   for (const e of edits) {
     if (e.type === "translate") {
       const g = pieces.get(e.part);
-      if (g) pieces.set(e.part, translateGeometry(g, e.dx, e.dy));
+      if (!g) continue;
+      const other = e.rel ? pieces.get(e.rel.other) : undefined;
+      const d = (e.rel && other && resolveRelativeMove(g, other, e.rel)) || { dx: e.dx, dy: e.dy };
+      pieces.set(e.part, translateGeometry(g, d.dx, d.dy));
     } else if (e.type === "split") {
       const g = pieces.get(e.part);
       if (!g) continue;
@@ -244,6 +302,9 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[]): Par
       if (ids.some((id) => pieces.has(id))) continue;
       pieces.delete(e.part);
       halves.forEach((h, i) => pieces.set(ids[i], h.geometry));
+      const parentName = names.get(e.part);
+      names.delete(e.part);
+      if (parentName) ids.forEach((id, i) => names.set(id, `${parentName} (${i + 1})`));
     } else if (e.type === "rotate") {
       const g = pieces.get(e.part);
       if (!g) continue;
@@ -258,7 +319,12 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[]): Par
       if (!merged) continue;
       pieces.delete(e.partA);
       pieces.delete(e.partB);
-      pieces.set(`${e.partA}&${e.partB}`, merged);
+      const mergedId = `${e.partA}&${e.partB}`;
+      pieces.set(mergedId, merged);
+      const nA = names.get(e.partA), nB = names.get(e.partB);
+      names.delete(e.partA);
+      names.delete(e.partB);
+      if (nA || nB) names.set(mergedId, `${nA ?? e.partA} + ${nB ?? e.partB}`);
     } else if (e.type === "smooth") {
       const g = pieces.get(e.part);
       if (!g) continue;
@@ -269,10 +335,30 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[]): Par
       if (!g || !(e.line in g.paths)) continue; // line gone → nothing to specify
       pieces.set(e.part, {
         ...g,
-        lineSpecs: { ...g.lineSpecs, [e.line]: { allowance: e.allowance, marker: e.marker } },
+        lineSpecs: { ...g.lineSpecs, [e.line]: lineSpecFromEdit(e) },
       });
+    } else if (e.type === "rename") {
+      if (!pieces.has(e.part)) continue;
+      const name = e.name.trim();
+      if (name) names.set(e.part, name);
+      else names.delete(e.part);
+    } else if (e.type === "definePart") {
+      if (pieces.has(e.part)) continue; // id taken → skip rather than overwrite
+      // Relative measurements are re-measured on the pieces as they are at
+      // this point of the history.
+      const values = measureValues(e.measures, pieces);
+      const g = evaluateDefinedPart(e.def, values, vars, e.at);
+      if (!g) continue;
+      pieces.set(e.part, g);
+      if (e.name?.trim()) names.set(e.part, e.name.trim());
+    } else if (e.type === "delete") {
+      pieces.delete(e.part);
+      names.delete(e.part);
     }
   }
 
-  return [...pieces.entries()].map(([id, geometry]) => ({ id, geometry }));
+  return [...pieces.entries()].map(([id, geometry]) => {
+    const name = names.get(id);
+    return name ? { id, geometry, name } : { id, geometry };
+  });
 }

@@ -36,6 +36,8 @@ export const MAX_MARGIN_MM = 15;
 export interface PrintPiece {
   id: string;
   geometry: GeometryResult;
+  /** Display name (printed instead of the id when set). */
+  name?: string;
 }
 
 export interface PrintOptions {
@@ -368,7 +370,17 @@ function drawPattern(
     }
   }
   c.push("[] 0 d");
-  if (!detailed) return;
+  if (!detailed) {
+    // Overview map: just the piece labels, small.
+    for (const pc of pieces) {
+      const b = pc.geometry.bbox;
+      if (!b) continue;
+      const q = map({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 });
+      const label = pc.name || pc.id;
+      c.text(q.x - textW(label, 7) / 2, q.y, 7, label, true, 0.2);
+    }
+    return;
+  }
 
   // Points (marker always; aux points if "show points" is on), as on screen.
   for (const { name, p } of visiblePoints(pieces, opts)) {
@@ -377,12 +389,18 @@ function drawPattern(
     c.circle(q.x, q.y, 0.06 * scalePt, "f");
     c.text(q.x + 3, q.y + 3, 6, name, false, 0.25);
   }
-  // Piece name at the centre of each piece's bounds.
+  // Piece name at the centre of each piece's bounds (with the technical id
+  // underneath in small grey when a display name is set), else just the id.
   for (const pc of pieces) {
     const b = pc.geometry.bbox;
     if (!b) continue;
     const q = map({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 });
-    c.text(q.x - textW(pc.id, 10) / 2, q.y, 10, pc.id, true, 0.15);
+    if (pc.name) {
+      c.text(q.x - textW(pc.name, 14) / 2, q.y, 14, pc.name, true, 0.1);
+      c.text(q.x - textW(pc.id, 6.5) / 2, q.y - 10, 6.5, pc.id, false, 0.45);
+    } else {
+      c.text(q.x - textW(pc.id, 10) / 2, q.y, 10, pc.id, true, 0.15);
+    }
   }
 }
 

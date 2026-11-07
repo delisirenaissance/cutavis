@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GeometryResult, ResolvedPoint } from "@/lib/geometry";
 import { belongsToPart } from "@/lib/edits";
+import { DefineLayer, type DefineOverlay } from "./DefineLayer";
 import {
   snapToBoundary,
   bezierToPath,
@@ -80,6 +81,8 @@ export interface MergeOverlay {
 export interface PartGeom {
   id: string;
   geometry: GeometryResult;
+  /** Display name, drawn at the piece's centre (falls back to the id). */
+  name?: string;
 }
 
 interface Props {
@@ -107,6 +110,8 @@ interface Props {
   merge?: MergeOverlay | null;
   /** Seam-allowance polygon per piece id (omitted pieces get none). */
   allowances?: Record<string, Vec2[]>;
+  /** When set, the "Define part" mode is active (measuring / part preview). */
+  define?: DefineOverlay | null;
 }
 
 interface Box {
@@ -163,6 +168,7 @@ export function PatternSvg({
   rotate = null,
   merge = null,
   allowances = {},
+  define = null,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -278,7 +284,7 @@ export function PatternSvg({
   function startDrag(e: React.MouseEvent, id: string) {
     // Selecting and moving parts is only allowed in edit-mode, and never while
     // a cut/rotation/merge is being drawn (their layers handle the pointer then).
-    if (!editMode || cut || rotate || merge) return;
+    if (!editMode || cut || rotate || merge || define) return;
     e.preventDefault();
     e.stopPropagation();
     onSelectPart(id);
@@ -485,8 +491,8 @@ export function PatternSvg({
         y={y}
         width={w}
         height={h}
-        fill={editMode ? "#ffff00" : "transparent"}
-        onMouseDown={editMode && !cut && !rotate && !merge ? () => onSelectPart(null) : undefined}
+        fill={editMode ? "#ffffcc" : "transparent"}
+        onMouseDown={editMode && !cut && !rotate && !merge && !define ? () => onSelectPart(null) : undefined}
       />
 
       {parts.map((part) => {
@@ -529,7 +535,7 @@ export function PatternSvg({
               <polygon
                 points={allowances[part.id].map((p) => `${p.x},${p.y}`).join(" ")}
                 fill="none"
-                stroke={isDimmed ? "#b8c9bd" : "#3d8b5a"}
+                stroke={isDimmed ? "#dddddd" : "#aaaaaa"}
                 strokeWidth={unit * 0.6}
                 strokeLinejoin="round"
                 pointerEvents="none"
@@ -592,6 +598,23 @@ export function PatternSvg({
                 strokeDasharray={`${unit * 2} ${unit * 2}`}
                 pointerEvents="none"
               />
+            )}
+
+            {/* Piece label at the centre of its bounds: the display name in
+                bold, or the id in a muted grey when the piece has no name. */}
+            {g.bbox && (
+              <text
+                x={(g.bbox.minX + g.bbox.maxX) / 2}
+                y={(g.bbox.minY + g.bbox.maxY) / 2}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize={unit * (part.name ? 4.6 : 3.4)}
+                fontWeight={part.name ? 700 : 400}
+                fill={isDimmed ? "#aaa" : part.name ? "#222" : "#8a8f98"}
+                pointerEvents="none"
+              >
+                {part.name || part.id}
+              </text>
             )}
 
             {/* Merge markers (screen only, never printed): label at the line's
@@ -774,6 +797,9 @@ export function PatternSvg({
           })()}
         </g>
       )}
+
+      {/* ── Define-line overlay (measuring on any outline + part preview) ── */}
+      {define && <DefineLayer overlay={define} box={{ x, y, w, h }} unit={unit} toGeom={clientToGeom} />}
 
       {/* ── Rotate overlay ──────────────────────────────────────────────────
           Same capture-layer approach: pick a center on a seam, then click-hold

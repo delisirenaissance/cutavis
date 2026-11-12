@@ -1,0 +1,189 @@
+{
+  "part_specific_user_definable_variables": {
+    "topLength": 75
+  },
+  "local_variables": {
+    "WZgTaU": "2",
+    "WZgHueU": "3",
+    "TaAf": "(1/2) * (TaU + WZgTaU) - (1/2) * (HueU + WZgHueU)",
+    "sHueAbst": "TaAf/2  + (-1.5 + 3 * (waistform/2))",
+    "vAbn": "1.5 + hipbones * (1.5/2)",
+    "hAbn": "TaAf - sHueAbst - vAbn",
+    "AlT_Zg": "1",
+    "RueB_Zg": "0.85",
+    "ArD_Zg": "1.75"
+  },
+  "points": {
+    "1": {
+      "x": "0",
+      "y": "0",
+      "pointType": "aux"
+    },
+    "2": {
+      "x": "0",
+      "y": "topLength",
+      "pointType": "aux"
+    },
+    "3": {
+      "x": "0",
+      "y": "AlT + AlT_Zg",
+      "pointType": "aux"
+    },
+    "4": {
+      "x": "0",
+      "y": "RueL",
+      "pointType": "aux"
+    },
+    "6": {
+      "x": "point(1->x) - (2+0.5*waistform)",
+      "y": "point(1->y) + RueL",
+      "pointType": "aux"
+    },
+    "7": {
+      "x&y": "f:intersectLines(L2,L3)",
+      "pointType": "aux"
+    },
+    "8": {
+      "x": "point(6->x)",
+      "y": "point(4->y) + HueT",
+      "pointType": "aux"
+    },
+    "9": {
+      "x": "point(6->x)",
+      "y": "point(1->y) + topLength",
+      "pointType": "aux"
+    },
+    "10": {
+      "x": "point(7->x) - RueB - RueB_Zg",
+      "y": "point(7->y)",
+      "pointType": "aux"
+    },
+    "11": {
+      "x": "point(10->x) - (2/3)*(ArD + ArD_Zg)",
+      "y": "point(10->y)",
+      "pointType": "aux"
+    },
+    "16": {
+      "x": "point(10->x)",
+      "y": "point(1->y)",
+      "pointType": "aux"
+    },
+    "17": {
+      "x": "point(1->x) - HlB",
+      "y": "point(1->y)",
+      "pointType": "aux"
+    },
+    "18": {
+      "x": "point(16->x)",
+      "y": "point(16->y) + 1.5",
+      "pointType": "aux"
+    },
+    "3b": {
+      "x": "point(3->x) - 10",
+      "y": "point(3->y)",
+      "pointType": "aux"
+    },
+    "11b": {
+      "x": "point(11->x) + (point(18->x) - point(11->x))/2",
+      "y": "point(11->y)",
+      "pointType": "aux"
+    },
+    "17b": {
+      "x": "point(17->x)",
+      "y": "point(17->y) - 2",
+      "pointType": "aux"
+    },
+    "18b": {
+      "x&y": "f:prolongLineToReachLength(5, SuB + 1)",
+      "pointType": "aux"
+    },
+    "18c": {
+      "x": "point(18->x) -1",
+      "y": "point(18->y) + (point(10->y)-point(18->y))/2",
+      "pointType": "aux"
+    },
+    "18d": {
+      "x": "point(18->x) -1.5",
+      "y": "point(18c->y) + (point(10->y)-point(18c->y))/2",
+      "pointType": "aux"
+    },
+    "18e": {
+      "x&y": "f:prolongLineToAddLength(L8, 3, SP)",
+      "pointType": "aux"
+    }
+  },
+  "lines": {
+    "L1": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "1",
+        "1",
+        "2",
+        "2"
+      ]
+    },
+    "L2": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "3",
+        "3",
+        "3b",
+        "3b"
+      ]
+    },
+    "L3": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "1",
+        "1",
+        "6",
+        "6"
+      ]
+    },
+    "L4": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "6",
+        "6",
+        "9",
+        "9"
+      ]
+    },
+    "L5": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "17b",
+        "17b",
+        "18",
+        "18"
+      ]
+    },
+    "L6": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "17b",
+        "17b",
+        "18b",
+        "18b"
+      ]
+    },
+    "L8": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "18c",
+        "18d",
+        "11b",
+        "11"
+      ]
+    },
+    "L9": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "18c",
+        "18e",
+        "18b",
+        "18b"
+      ]
+    }
+  }
+}

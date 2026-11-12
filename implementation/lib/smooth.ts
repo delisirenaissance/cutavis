@@ -9,7 +9,7 @@
 // jags and steps hardly pull on the curve. A few reparameterization passes
 // (Newton steps of each sample's curve parameter) refine the fit.
 
-import type { GeometryResult } from "./geometry";
+import { boundsWithCircles, type GeometryResult } from "./geometry";
 import {
   bezierAt,
   bezierToPath,
@@ -330,5 +330,5 @@ export function smoothGeometry(g: GeometryResult, lines: string[]): GeometryResu
     points[k] = p;
   }
 
-  return { ...g, points, paths, lineTypes, lineSpecs, bbox: bboxOfPaths(paths) };
+  return { ...g, points, paths, lineTypes, lineSpecs, bbox: boundsWithCircles(bboxOfPaths(paths), g.circles) };
 }

@@ -12,7 +12,7 @@
 // same functions work at cut-time (screen) and replay-time (after measurement
 // changes).
 
-import { intersectBeziers } from "./geometry";
+import { boundsWithCircles, intersectBeziers } from "./geometry";
 import type { GeometryResult, ResolvedPoint } from "./geometry";
 import type { LineSpec } from "./types";
 
@@ -657,7 +657,18 @@ export function pieceToGeometry(piece: BoundarySeg[], source: GeometryResult): G
     paths,
     lineTypes,
     localValues: {},
-    bbox: piece.length ? { minX, minY, maxX, maxY } : null,
+    // Circles (markings) go with the piece that contains their centre.
+    ...(() => {
+      const kept: Record<string, NonNullable<GeometryResult["circles"]>[string]> = {};
+      for (const [k, c] of Object.entries(source.circles ?? {})) {
+        if (piece.length && pointInPolygon(piece, { x: c.cx, y: c.cy })) kept[k] = c;
+      }
+      const has = Object.keys(kept).length > 0;
+      return {
+        bbox: boundsWithCircles(piece.length ? { minX, minY, maxX, maxY } : null, has ? kept : undefined),
+        ...(has ? { circles: kept } : {}),
+      };
+    })(),
     errors: {},
     lineSpecs,
   };
@@ -1144,6 +1155,7 @@ export function mergeGeometryPair(
     paths: { ...gA.paths, ...gB.paths },
     lineTypes: { ...gA.lineTypes, ...gB.lineTypes },
     lineSpecs: { ...gA.lineSpecs, ...gB.lineSpecs },
+    circles: { ...gA.circles, ...gB.circles },
     localValues: {},
     bbox: gA.bbox && gB.bbox
       ? {

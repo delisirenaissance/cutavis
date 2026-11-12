@@ -8,6 +8,8 @@ import { useState } from "react";
 
 interface Props {
   patterns: string[];
+  /** Display titles (the `name` field of the pattern files), by file name. */
+  titles?: Record<string, string>;
   /** The pattern currently open in the editor (marked on its card). */
   currentPattern: string;
   /** True if the current pattern has unsaved changes. */
@@ -26,11 +28,14 @@ const SLIDES = [
 
 function ProductCard({
   name,
+  title,
   current,
   dirty,
   onOpen,
 }: {
   name: string;
+  /** Shown title (the pattern's `name` field, else the file name). */
+  title: string;
   current: boolean;
   dirty: boolean;
   onOpen: () => void;
@@ -52,7 +57,7 @@ function ProductCard({
       onKeyDown={(e) => {
         if (e.key === "Enter") onOpen();
       }}
-      title={`Open ${name}`}
+      title={`Open ${title}`}
     >
       <div className="product-carousel">
         {missing[s.kind] ? (
@@ -66,7 +71,7 @@ function ProductCard({
           <img
             key={s.kind}
             src={`/api/pattern-images/${s.kind}/${encodeURIComponent(name)}`}
-            alt={`${name} — ${s.label}`}
+            alt={`${title} — ${s.label}`}
             onError={() => setMissing((m) => ({ ...m, [s.kind]: true }))}
           />
         )}
@@ -89,18 +94,18 @@ function ProductCard({
         </div>
       </div>
       <div className="product-info">
-        <h3>{name}</h3>
+        <h3>{title}</h3>
       </div>
     </article>
   );
 }
 
-export function PatternShop({ patterns, currentPattern, currentDirty, onOpen, status, tailorSwitch }: Props) {
+export function PatternShop({ patterns, titles = {}, currentPattern, currentDirty, onOpen, status, tailorSwitch }: Props) {
   return (
     <div className="shop">
       <header className="shop-hero">
         {tailorSwitch && <div className="shop-topbar">{tailorSwitch}</div>}
-        <img width="15%" width="20%" src="/imgs/logo.svg" alt="Logo"></img>
+        <img width="15%" src="/imgs/logo.svg" alt="Logo"></img>
         <h1>delisi</h1>
         <h2>patterns made to measure</h2>
         <p>1. select a pattern.</p>
@@ -117,6 +122,7 @@ export function PatternShop({ patterns, currentPattern, currentDirty, onOpen, st
               <ProductCard
                 key={name}
                 name={name}
+                title={titles[name] || name}
                 current={name === currentPattern}
                 dirty={name === currentPattern && currentDirty}
                 onOpen={() => onOpen(name)}

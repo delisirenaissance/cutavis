@@ -12,8 +12,35 @@
 
 import { Parser } from "expr-eval";
 import type { LineSpec, Measurements, PartDef } from "./types";
+import { excelToExpr } from "./calculatedVariables";
 
 const detectParser = new Parser();
+
+// Part formulas may also use the Excel syntax of calculated_variables.csv
+// (e.g. a formula pasted from there: "BrU/10 + if(BrU<120;11;10.5)"). In
+// expr-eval ";" is the sequence operator, so such a formula used to evaluate
+// silently to NaN. Only formulas with an Excel marker (";", "<>", a leading
+// "=") are translated; all others are left untouched.
+const EXCEL_MARKER_RE = /;|<>|^\s*=/;
+
+function excelFormula<T>(expr: T): T {
+  return typeof expr === "string" && EXCEL_MARKER_RE.test(expr) ? (excelToExpr(expr) as T) : expr;
+}
+
+/** A copy of the part with every Excel-style formula translated to expr-eval. */
+function normalizeFormulas(part: PartDef): PartDef {
+  const mapValues = <V>(o: Record<string, V>, f: (v: V) => V): Record<string, V> =>
+    Object.fromEntries(Object.entries(o).map(([k, v]) => [k, f(v)]));
+  return {
+    ...part,
+    local_variables: part.local_variables && mapValues(part.local_variables, excelFormula),
+    points: mapValues(part.points, (pd) => ({ ...pd, x: excelFormula(pd.x), y: excelFormula(pd.y) })),
+    lines: mapValues(part.lines, (l) => ({ ...l, condition: excelFormula(l.condition) })),
+    circles:
+      part.circles &&
+      mapValues(part.circles, (c) => ({ ...c, radius: excelFormula(c.radius), condition: excelFormula(c.condition) })),
+  };
+}
 
 const OP_BUCKETS = ["unaryOps", "binaryOps", "ternaryOps", "functions", "consts"] as const;
 
@@ -33,6 +60,29 @@ export interface ResolvedPoint {
   position?: string;
 }
 
+/** An evaluated circle (pattern units). */
+export interface ResolvedCircle {
+  cx: number;
+  cy: number;
+  r: number;
+  lineType?: string;
+}
+
+/** Grow a bbox to include circles (returns a new bbox; null stays null if no
+ *  circles). */
+export function boundsWithCircles(
+  bbox: GeometryResult["bbox"],
+  circles: Record<string, ResolvedCircle> | undefined
+): GeometryResult["bbox"] {
+  let b = bbox ? { ...bbox } : null;
+  for (const c of Object.values(circles ?? {})) {
+    b = b
+      ? { minX: Math.min(b.minX, c.cx - c.r), minY: Math.min(b.minY, c.cy - c.r), maxX: Math.max(b.maxX, c.cx + c.r), maxY: Math.max(b.maxY, c.cy + c.r) }
+      : { minX: c.cx - c.r, minY: c.cy - c.r, maxX: c.cx + c.r, maxY: c.cy + c.r };
+  }
+  return b;
+}
+
 export interface GeometryResult {
   points: Record<string, ResolvedPoint>;
   /** SVG path "d" strings, keyed by line name. */
@@ -47,6 +97,8 @@ export interface GeometryResult {
    *  name. Set by `lineSpec` pattern edits; a missing entry means the default
    *  (`DEFAULT_LINE_SPEC`). Carried over to fragments when a piece is cut. */
   lineSpecs?: Record<string, LineSpec>;
+  /** Evaluated circles by name (markings; not part of the outline). */
+  circles?: Record<string, ResolvedCircle>;
 }
 
 // ── Geometric function helpers ────────────────────────────────────────────────
@@ -60,7 +112,37 @@ const GEO_FUNC_RE = /^f:(\w+)\((.*)\)$/;
 function parseGeoFunc(expr: string): { func: string; args: string[] } | null {
   const m = GEO_FUNC_RE.exec(expr.trim());
   if (!m) return null;
-  return { func: m[1], args: m[2].split(",").map((s) => s.trim()).filter(Boolean) };
+  // Split at top-level commas only, so an argument may itself be a formula
+  // with a function call, e.g. if(hAbn < 4.5, SP, EP).
+  const args: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of m[2]) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (ch === "," && depth === 0) { args.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  args.push(cur);
+  return { func: m[1], args: args.map((s) => s.trim()).filter(Boolean) };
+}
+
+/** f:prolongLineToReachLength (+ its older name): d = the total length.
+ *  f:prolongLineToAddLength (+ the spelling "…Lenght"): d = the added length. */
+const PROLONG_FUNCS = new Set([
+  "prolongLineToReachLength",
+  "prolongStraightLineToReachLength",
+  "prolongLineToAddLength",
+  "prolongLineToAddLenght",
+]);
+const PROLONG_ADD_FUNCS = new Set(["prolongLineToAddLength", "prolongLineToAddLenght"]);
+
+/** A line referenced by a geo-function argument: the exact name, or — for a
+ *  bare number like "5" — the line "L5". */
+function resolveLineName(arg: string, part: PartDef): string | null {
+  if (part.lines[arg]) return arg;
+  if (/^\d+$/.test(arg) && part.lines[`L${arg}`]) return `L${arg}`;
+  return null;
 }
 
 /** Returns the unique point names referenced by a named line. */
@@ -379,6 +461,7 @@ function topoSort(
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export function collectVariables(part: PartDef): string[] {
+  part = normalizeFormulas(part);
   const vars = new Set<string>();
   // Local variable names are NOT measurement inputs — exclude them from results
   // but DO scan their formulas so that any measurements they reference are included.
@@ -405,6 +488,20 @@ export function collectVariables(part: PartDef): string[] {
         }
       } catch {
         // Ignore parse errors; they surface during evaluation.
+      }
+    }
+  }
+
+  // Circle radii and conditions can reference variables too.
+  for (const c of Object.values(part.circles ?? {})) {
+    for (const expr of [c.radius, c.condition?.replace(CONDITION_IF_RE, "")]) {
+      if (typeof expr !== "string" || expr.trim() === "") continue;
+      try {
+        for (const v of detectParser.parse(expr.replace(POINT_REF_RE, "0")).variables()) {
+          if (!localNames.has(v)) vars.add(v);
+        }
+      } catch {
+        // surfaces during evaluation
       }
     }
   }
@@ -461,6 +558,7 @@ function evalCondition(
 }
 
 export function evaluatePart(part: PartDef, measurements: Measurements): GeometryResult {
+  part = normalizeFormulas(part);
   const points: Record<string, ResolvedPoint> = {};
   const paths: Record<string, string> = {};
   const lineTypes: Record<string, string | undefined> = {};
@@ -528,6 +626,12 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         // Depends on the endpoints of the referenced line plus any sibling
         // points referenced from its distance formulas.
         const lineDeps = gf.args[0] ? linePointDeps(gf.args[0], part) : [];
+        const exprDeps = [...pointDepsOf(gf.args[1] ?? ""), ...pointDepsOf(gf.args[2] ?? "")];
+        return [...new Set([...lineDeps, ...exprDeps])];
+      }
+      if (gf && PROLONG_FUNCS.has(gf.func)) {
+        const lineName = gf.args[0] ? resolveLineName(gf.args[0], part) : null;
+        const lineDeps = lineName ? linePointDeps(lineName, part) : [];
         const exprDeps = [...pointDepsOf(gf.args[1] ?? ""), ...pointDepsOf(gf.args[2] ?? "")];
         return [...new Set([...lineDeps, ...exprDeps])];
       }
@@ -664,6 +768,95 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         const x = foot.point.x - uy * offset;
         const y = foot.point.y + ux * offset;
         points[name] = { x, y, pointType: pd.pointType, position: pd.position };
+      } else if (PROLONG_FUNCS.has(gf.func)) {
+        // f:prolongLineToReachLength(L, d, e)   (old name:
+        // prolongStraightLineToReachLength, same behaviour)
+        // Extends the line L until it is d cm long and returns the new end
+        // point. e chooses the end that is extended: "EP" (default; beyond the
+        // end point, the start point stays) or "SP" (beyond the start point,
+        // the end point stays). e may be a formula that yields SP or EP, e.g.
+        // if(hAbn < 4.5, SP, EP). The line itself is unchanged.
+        //  - The line's length is its arc length (= the chord when straight).
+        //  - Beyond it, the extension is straight, in the line's direction at
+        //    that end: the line through the end point and its Bézier control
+        //    point (C2→EP, or C1→SP). If that control point coincides with the
+        //    end (e.g. a straight [A,A,B,B]), the next one is used, then the
+        //    other end point.
+        //  - A d shorter than the line gives the point ON the line at arc
+        //    length d from the fixed end.
+        // f:prolongLineToAddLength(L, a, e) is the same with d = length of L + a
+        // (a < 0 shortens: the point lies on L, |a| before the extended end).
+        const fn = gf.func;
+        const addMode = PROLONG_ADD_FUNCS.has(fn);
+        if (gf.args.length < 2 || gf.args.length > 3) {
+          errors[name] = `${fn} requires 2 or 3 arguments (line, ${addMode ? "added length" : "length"}, SP|EP), got ${gf.args.length}`;
+          continue;
+        }
+        const [lineArg, lengthExpr, endExpr = "EP"] = gf.args;
+        const lineName = resolveLineName(lineArg, part);
+        if (!lineName) { errors[name] = `Unknown line "${lineArg}"`; continue; }
+        const refs = part.lines[lineName].linePointReferences;
+        const missing = refs.filter((r) => !points[r]);
+        if (missing.length) {
+          errors[name] = `Unresolved point(s) for line "${lineName}": ${[...new Set(missing)].join(", ")}`;
+          continue;
+        }
+        const bez = refs.map((r) => ({ x: points[r].x, y: points[r].y })) as unknown as Bezier;
+
+        let value: number;
+        try {
+          value = evalFormula(parser, inlinePointRefs(excelFormula(lengthExpr), points), fullScope);
+        } catch (err) {
+          errors[name] = `Cannot evaluate ${addMode ? "added length" : "length"} "${lengthExpr}": ${(err as Error).message}`;
+          continue;
+        }
+
+        // e: SP / EP, written plainly, quoted, or as a formula yielding them.
+        let end: string;
+        try {
+          const e = inlinePointRefs(excelFormula(endExpr), points);
+          const scope = { ...fullScope, SP: "SP", EP: "EP" } as unknown as Measurements;
+          end = String(parser.parse(e).evaluate(scope)).trim().toUpperCase();
+        } catch (err) {
+          errors[name] = `Cannot evaluate end "${endExpr}": ${(err as Error).message}`;
+          continue;
+        }
+        if (end !== "SP" && end !== "EP") {
+          errors[name] = `${fn}: the end must be SP or EP, got "${end}"`;
+          continue;
+        }
+
+        // Orient the curve so it runs from the fixed end to the extended end.
+        const run: Bezier = end === "EP" ? bez : [bez[3], bez[2], bez[1], bez[0]];
+        const tip = run[3];
+        const arc = pointAlongBezier(run, 0).total;
+        if (arc === 0) {
+          errors[name] = `Line "${lineName}" has zero length; it has no direction to prolong`;
+          continue;
+        }
+        const length = addMode ? arc + value : value;
+        if (length < 0) {
+          errors[name] = addMode
+            ? `${fn}: shortening by ${-value} is more than the length of line "${lineName}" (${arc.toFixed(4)})`
+            : `${fn}: the length must not be negative (got ${value})`;
+          continue;
+        }
+        if (length <= arc) {
+          // On the line itself, arc length `length` from the fixed end.
+          const on = pointAlongBezier(run, length).point!;
+          points[name] = { x: on.x, y: on.y, pointType: pd.pointType, position: pd.position };
+          continue;
+        }
+        // Straight extension beyond the tip, along control point → tip.
+        const eps = 1e-9 * Math.max(1, arc);
+        const from = [run[2], run[1], run[0]].find((p) => Math.hypot(tip.x - p.x, tip.y - p.y) > eps)!;
+        const dx = tip.x - from.x;
+        const dy = tip.y - from.y;
+        const dlen = Math.hypot(dx, dy);
+        const extra = length - arc;
+        const x = tip.x + (dx / dlen) * extra;
+        const y = tip.y + (dy / dlen) * extra;
+        points[name] = { x, y, pointType: pd.pointType, position: pd.position };
       } else {
         errors[name] = `Unknown geometric function "f:${gf.func}"`;
       }
@@ -720,8 +913,41 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
     paths[name] = `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y} ${c2.x} ${c2.y} ${p3.x} ${p3.y}`;
   }
 
+  // Circles: centre = a named point, radius = a formula (may use variables and
+  // point(NAME->x|y) references), optional visibility condition like lines.
+  const circles: Record<string, ResolvedCircle> = {};
+  for (const [name, c] of Object.entries(part.circles ?? {})) {
+    if (typeof c.condition === "string" && c.condition.trim() !== "") {
+      let visible: boolean;
+      try {
+        visible = evalCondition(parser, c.condition, points, fullScope);
+      } catch (err) {
+        errors[`${name}.condition`] = (err as Error).message;
+        continue;
+      }
+      if (!visible) continue;
+    }
+    const center = points[c.centerPoint];
+    if (!center) {
+      errors[name] = `Unknown / unresolved centre point: ${c.centerPoint}`;
+      continue;
+    }
+    let r: number;
+    try {
+      r = evalFormula(parser, inlinePointRefs(String(c.radius), points), fullScope);
+    } catch (err) {
+      errors[name] = `Cannot evaluate radius "${c.radius}": ${(err as Error).message}`;
+      continue;
+    }
+    if (!Number.isFinite(r) || r <= 0) {
+      errors[name] = `Radius must be a positive number (got ${r})`;
+      continue;
+    }
+    circles[name] = { cx: center.x, cy: center.y, r, lineType: c.lineType };
+  }
+
   const coords = Object.values(points);
-  const bbox =
+  const bbox = boundsWithCircles(
     coords.length === 0
       ? null
       : {
@@ -729,9 +955,14 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
           minY: Math.min(...coords.map((p) => p.y)),
           maxX: Math.max(...coords.map((p) => p.x)),
           maxY: Math.max(...coords.map((p) => p.y)),
-        };
+        },
+    circles
+  );
 
-  return { points, paths, lineTypes, localValues: localScope, bbox, errors };
+  return {
+    points, paths, lineTypes, localValues: localScope, bbox, errors,
+    ...(Object.keys(circles).length ? { circles } : {}),
+  };
 }
 
 // ── Multi-part merge ──────────────────────────────────────────────────────────

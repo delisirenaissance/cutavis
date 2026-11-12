@@ -46,6 +46,8 @@ export interface StoredState {
   editBarCollapsed?: boolean;
   /** Tailor mode: Display section, edit tools and Inspector visible. */
   tailorMode?: boolean;
+  /** Size type (measurement_variables.csv header row) used to label the sizes. */
+  sizeSystem?: string;
 }
 
 const KEY = "cutavis";

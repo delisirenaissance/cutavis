@@ -1,0 +1,40 @@
+{
+  "local_variables": {
+    "buttonradius": "1.2"
+  },
+  "points": {
+    "1": {
+      "x": "-0.2",
+      "y": "0",
+      "pointType": "aux"
+    },
+    "2": {
+      "x": "-buttonradius -0.2",
+      "y": "0",
+      "pointType": "aux"
+    }
+  }, 
+  "lines": {
+    "L1": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "1",
+        "1",
+        "2",
+        "2"
+      ]
+    }
+  },
+  "circles": {
+    "C1": {
+      "lineType": "seam",
+      "centerPoint": "1",
+      "radius": "0.2"
+    },
+    "C2": {
+      "lineType": "aux",
+      "centerPoint": "1",
+      "radius": "buttonradius"
+    }
+  }
+}

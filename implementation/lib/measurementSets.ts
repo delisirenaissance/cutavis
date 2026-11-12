@@ -2,10 +2,6 @@ import type { Measurements } from "./types";
 
 export const MEASUREMENT_SETS: Record<string, Measurements> = {
   "38 (EU)": {
-    curve: 8,
-    length: 40,
-    margin: 4,
-    width: 30,
     BrU: 88,
     uBrU: 71,
     TaU: 72,
@@ -24,10 +20,6 @@ export const MEASUREMENT_SETS: Record<string, Measurements> = {
     FeU: 24.5,
   },
   "40 (EU)": {
-    curve: 9,
-    length: 42,
-    margin: 3.5,
-    width: 27,
     BrU: 92,
     uBrU: 75,
     TaU: 76,
@@ -51,3 +43,22 @@ export const MEASUREMENT_SET_NAMES = Object.keys(MEASUREMENT_SETS);
 
 // Canonical variable order taken from measurement_variables.csv
 export const MEASUREMENT_VARIABLE_NAMES = Object.keys(MEASUREMENT_SETS["38 (EU)"]);
+
+/*export const MEASUREMENT_VARIABLE_NAMES = [
+    "chest",
+    "underbust",
+    "waist",
+    "hip (around butt)",
+    "side length floor to waist",
+    "waist to hip, measured along side",
+    "neck",
+    "back length",
+    "neck (back) to chest",
+    "neck (back) to waist",
+    "arm lenght",
+    "upper arm circumference",
+    "wrist circumference",
+    "sitting height",
+    "floor to crotch",
+    "ankle circumference"
+]*/

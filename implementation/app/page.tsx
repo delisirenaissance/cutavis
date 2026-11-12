@@ -14,7 +14,8 @@ import {
   resolveBodyformValues,
   type BodyformTable,
 } from "@/lib/bodyformVariables";
-import type { VariableTables } from "@/lib/variableCsv";
+import type { SizeSystem, VariableTables } from "@/lib/variableCsv";
+import { evaluateCalculated, type CalculatedVariable } from "@/lib/calculatedVariables";
 import { loadState, saveState, type StoredState } from "@/lib/storage";
 import {
   allowanceTypeOf,
@@ -30,6 +31,7 @@ import {
 import { seamAllowanceOutline } from "@/lib/allowance";
 import { findSmoothRun, fitCubicToChain, SMOOTH_SKIP_MAX_CM } from "@/lib/smooth";
 import { relativeMoveAfterDrag, relativeMoveForLines } from "@/lib/relativeMove";
+import { pinPlacement } from "@/lib/pin";
 import {
   evaluateDefinedPart,
   measureName,
@@ -47,6 +49,7 @@ import {
   migrateEdits,
   rootPartOf,
   patternSignature,
+  buildPattern,
   type PatternEdit,
   type PartPiece,
 } from "@/lib/edits";
@@ -116,6 +119,12 @@ export default function Home() {
   const [measurementsOpen, setMeasurementsOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [defineSectionOpen, setDefineSectionOpen] = useState(false);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  // Edit-part mode: inside pattern edit mode, a part (activePartFile) was picked
+  // with its "Edit" button. Only then are the edit tools and the JSON editor
+  // shown — as two tabs of the edit column, one visible at a time.
+  const [partEditing, setPartEditing] = useState(false);
+  const [partEditTab, setPartEditTab] = useState<"tools" | "json">("tools");
   // The parts currently loaded onto the plot. The editor shows one at a time
   // (activePartFile); every loaded part is rendered on the shared plot.
   const [loadedParts, setLoadedParts] = useState<LoadedPart[]>([]);
@@ -139,9 +148,19 @@ export default function Home() {
   const [measurementVariableNames, setMeasurementVariableNames] =
     useState<string[]>(MEASUREMENT_VARIABLE_NAMES);
   const [bodyformVariables, setBodyformVariables] = useState<BodyformTable>(BODYFORM_VARIABLES);
+  // Formula-defined variables from calculated_variables.csv (see lib/calculatedVariables.ts).
+  const [calculatedDefs, setCalculatedDefs] = useState<CalculatedVariable[]>([]);
   const [reloadStatus, setReloadStatus] = useState<{ ok: boolean; msg: string } | null>(null);
+  // Size types of measurement_variables.csv (International, European, …) and
+  // the one used to label the sizes; the set keys never change.
+  const [sizeSystems, setSizeSystems] = useState<SizeSystem[]>([]);
+  const [sizeSystem, setSizeSystem] = useState("");
+  const [reimportStatus, setReimportStatus] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const measurementSetNames = useMemo(() => Object.keys(measurementSets), [measurementSets]);
+  // The chosen size type (else the first one); sizeLabel shows a set in it.
+  const activeSizeSystem = sizeSystems.find((s) => s.name === sizeSystem) ?? sizeSystems[0] ?? null;
+  const sizeLabel = (setKey: string) => activeSizeSystem?.labels[setKey] ?? setKey;
   const bodyformVariableNames = useMemo(() => Object.keys(bodyformVariables), [bodyformVariables]);
 
   const [showAuxLines, setShowAuxLines] = useState(false);
@@ -155,6 +174,8 @@ export default function Home() {
   // Ephemeral UI state — not persisted
   const [partFiles, setPartFiles] = useState<string[]>([]);
   const [patternFiles, setPatternFiles] = useState<string[]>([]);
+  // Display titles from the patterns' `name` field (file name → title).
+  const [patternTitles, setPatternTitles] = useState<Record<string, string>>({});
   const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [savePatternModalOpen, setSavePatternModalOpen] = useState(false);
@@ -217,6 +238,8 @@ export default function Home() {
   const [smooth, setSmooth] = useState<{ pieceId?: string; lines: string[] } | null>(null);
   // Inline "name this piece" editor: the piece and the text being typed.
   const [naming, setNaming] = useState<{ part: string; value: string } | null>(null);
+  // "Pin to part": the part to pin, waiting for the host to be clicked.
+  const [pinPick, setPinPick] = useState<{ part: string } | null>(null);
   // "Define part" mode: measure distances (d_1, d_2, …) on any outline, then
   // define a new part by a JSON formula that may use them. `json` null = show
   // the generated rectangle template; `point` is only for drawing the marks.
@@ -248,6 +271,7 @@ export default function Home() {
       showAllowance,
       editBarCollapsed,
       tailorMode,
+      sizeSystem,
       ...overrides,
     });
   }
@@ -255,6 +279,15 @@ export default function Home() {
   // ── Mount: restore from storage, then load the default part file if needed ──
 
   useEffect(() => {
+    // Calculated variables (formulas over the measurements) come from the CSV.
+    fetch("/api/variables", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d: Partial<VariableTables>) => {
+        setCalculatedDefs(d.calculatedVariables ?? []);
+        applyMeasurementTables(d, loadState().selectedSet);
+      })
+      .catch(() => {});
+
     // Fetch available part files
     fetch("/api/parts")
       .then((r) => r.json())
@@ -266,6 +299,7 @@ export default function Home() {
       .then((r) => r.json())
       .then((files: string[]) => setPatternFiles(files))
       .catch(() => {});
+    refreshPatternTitles();
 
     // Restore persisted state
     const stored = loadState();
@@ -283,6 +317,7 @@ export default function Home() {
     if (stored.showAllowance !== undefined) setShowAllowance(stored.showAllowance);
     if (stored.editBarCollapsed !== undefined) setEditBarCollapsed(stored.editBarCollapsed);
     if (stored.tailorMode !== undefined) setTailorMode(stored.tailorMode);
+    if (stored.sizeSystem) setSizeSystem(stored.sizeSystem);
 
     // ── Restore the loaded parts ────────────────────────────────────────────
     // Prefer the new multi-part storage; otherwise migrate the old single-part
@@ -338,10 +373,18 @@ export default function Home() {
     [bodyformSelections, bodyformVariables]
   );
 
-  // Measurements and body-form values share one namespace for formula lookup.
+  // Calculated variables: formulas over the measurements and body-form values,
+  // evaluated here and then used like measurements everywhere.
+  const calculated = useMemo(
+    () => evaluateCalculated(calculatedDefs, { ...measurements, ...bodyformValues }),
+    [calculatedDefs, measurements, bodyformValues]
+  );
+
+  // Measurements, body-form and calculated values share one namespace for
+  // formula lookup.
   const variableValues = useMemo(
-    () => ({ ...measurements, ...bodyformValues }),
-    [measurements, bodyformValues]
+    () => ({ ...measurements, ...bodyformValues, ...calculated.values }),
+    [measurements, bodyformValues, calculated]
   );
 
   // Evaluate every loaded part independently. Each part gets its own scope:
@@ -391,6 +434,25 @@ export default function Home() {
 
   const loadedFiles = useMemo(() => loadedParts.map((p) => p.file), [loadedParts]);
 
+  // Pinned combinations: for every piece, all pieces of its combination (the
+  // host with everything pinned to it) — moved/rotated together.
+  const pinGroups = useMemo(() => {
+    const host = new Map(plotPieces.filter((p) => p.pinnedTo).map((p) => [p.id, p.pinnedTo!]));
+    const rootOf = (id: string) => {
+      let cur = id;
+      for (let guard = 0; host.has(cur) && guard < 1000; guard++) cur = host.get(cur)!;
+      return cur;
+    };
+    const byRoot = new Map<string, string[]>();
+    for (const p of plotPieces) {
+      const r = rootOf(p.id);
+      byRoot.set(r, [...(byRoot.get(r) ?? []), p.id]);
+    }
+    const out: Record<string, string[]> = {};
+    for (const p of plotPieces) out[p.id] = byRoot.get(rootOf(p.id))!;
+    return out;
+  }, [plotPieces]);
+
   // Display names of the current pieces (id → name), for the part lists.
   const pieceNames = useMemo(() => {
     const out: Record<string, string> = {};
@@ -420,9 +482,10 @@ export default function Home() {
   // The part currently shown in the editor (a loaded part / root, never a piece).
   const activeEntry = partEntries.find((p) => p.file === activePartFile) ?? null;
   const activeLoaded = loadedParts.find((p) => p.file === activePartFile) ?? null;
-  const activePart = activeEntry?.part ?? null;
   const activeParseError = activeEntry?.parseError ?? null;
   const activeText = activeLoaded?.text ?? "";
+  // Edit-part mode is on: all edit tools, plot dragging and the JSON editor work.
+  const editActive = patternEditMode && partEditing && activeLoaded != null;
 
   // How many loaded parts define each user-definable variable name. Used to flag
   // variables that are shared across parts (an edit applies to all of them).
@@ -434,6 +497,18 @@ export default function Home() {
       }
     }
     return counts;
+  }, [partEntries]);
+
+  // "Customize pattern": the user-definable variables of ALL loaded parts, one
+  // entry per name (a change updates every part defining it).
+  const customVars = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const pg of partEntries) {
+      for (const [k, v] of Object.entries(pg.part?.part_specific_user_definable_variables ?? {})) {
+        if (!(k in out)) out[k] = v;
+      }
+    }
+    return Object.entries(out);
   }, [partEntries]);
 
   const formulaErrors = Object.entries(merged.errors);
@@ -459,13 +534,14 @@ export default function Home() {
   );
   // Only one edit tool (cut / rotate / merge / specify / smooth) at a time.
   const toolBusy =
-    cut != null || rotate != null || merge != null || specify != null || smooth != null || naming != null || define != null;
-  const canCut = patternEditMode && !toolBusy && selectedPiece != null && selectedCuttable;
-  const canRotate = patternEditMode && !toolBusy && selectedPiece != null && selectedCuttable;
-  const canMerge = patternEditMode && !toolBusy && plotPieces.length >= 2;
-  const canSpecify = patternEditMode && !toolBusy && plotPieces.length > 0;
-  const canSmooth = patternEditMode && !toolBusy && plotPieces.length > 0;
-  const canDefine = patternEditMode && !toolBusy && plotPieces.length > 0;
+    cut != null || rotate != null || merge != null || specify != null || smooth != null || naming != null || define != null ||
+    pinPick != null;
+  const canCut = editActive && !toolBusy && selectedPiece != null && selectedCuttable;
+  const canRotate = editActive && !toolBusy && selectedPiece != null && selectedCuttable;
+  const canMerge = editActive && !toolBusy && plotPieces.length >= 2;
+  const canSpecify = editActive && !toolBusy && plotPieces.length > 0;
+  const canSmooth = editActive && !toolBusy && plotPieces.length > 0;
+  const canDefine = editActive && !toolBusy && plotPieces.length > 0;
 
   // ── Edit-tools sidebar ─────────────────────────────────────────────────────
   // Starting a tool re-expands the bar so its controls (Cut now, Apply, …) are
@@ -486,6 +562,12 @@ export default function Home() {
     const next = !editBarCollapsed;
     setEditBarCollapsed(next);
     persist({ editBarCollapsed: next });
+  }
+
+  // Edit-part tabs. The JSON tab needs room, so it expands a collapsed panel.
+  function selectPartEditTab(tab: "tools" | "json") {
+    setPartEditTab(tab);
+    if (tab === "json" && editBarCollapsed) toggleEditBar();
   }
 
   const editTools: {
@@ -524,12 +606,25 @@ export default function Home() {
     },
     {
       key: "name", icon: "🏷", label: "Name part", onClick: startNaming,
-      enabled: patternEditMode && !toolBusy && selectedPiece != null, active: naming != null,
+      enabled: editActive && !toolBusy && selectedPiece != null, active: naming != null,
       title: selectedPiece ? "Give the selected part a display name" : "Select a part on the plot first",
     },
+    selectedPiece?.pinnedTo
+      ? {
+          key: "pin", icon: "📌", label: "Unpin part", onClick: unpinSelected,
+          enabled: editActive && !toolBusy, active: false,
+          title: `Release ${pieceLabel(selectedPiece)} from ${pieceLabel(plotPieces.find((p) => p.id === selectedPiece.pinnedTo) ?? { id: selectedPiece.pinnedTo })}`,
+        }
+      : {
+          key: "pin", icon: "📌", label: "Pin to part", onClick: startPin,
+          enabled: editActive && !toolBusy && selectedPiece != null && plotPieces.length >= 2, active: pinPick != null,
+          title: selectedPiece
+            ? "Pin the selected part (e.g. a button hole) to the part it lies on — they then move and rotate together"
+            : "Select a part on the plot first",
+        },
     {
       key: "delete", icon: "🗑", label: "Delete part", onClick: handleDeleteSelected,
-      enabled: patternEditMode && !toolBusy && selectedPiece != null, active: false, danger: true,
+      enabled: editActive && !toolBusy && selectedPiece != null, active: false, danger: true,
       title: selectedPiece
         ? `Delete ${pieceLabel(selectedPiece)} (Del key) — undo brings it back`
         : "Select a part on the plot first",
@@ -762,18 +857,40 @@ export default function Home() {
 
   // ── Event handlers (each calls persist() with the new values) ─────────────
 
-  // Enter the Pattern tab's edit-mode (shows the JSON editor + part dropdown).
+  // Enter pattern edit mode: shows "Define pattern" (the part list), opened,
+  // since picking a part there is the way into edit-part mode.
   // Clear the blue name-highlight, which is a non-edit-mode affordance.
   function enterPatternEdit() {
     setPatternEditMode(true);
+    setPartEditing(false);
     setHighlightedPart(null);
-    setDefineSectionOpen(false); // "Define pattern" starts collapsed in edit mode
+    setDefineSectionOpen(true);
   }
 
   function exitPatternEdit() {
     setPatternEditMode(false);
+    stopPartEdit();
+  }
+
+  // Edit-part mode for one loaded part ("Edit" in the part list). Selects the
+  // part's own piece on the plot if it still exists under its file id.
+  function startPartEdit(file: string) {
+    cancelTools();
+    handleSelectPart(file);
+    setPartEditing(true);
+    setPartEditTab("tools");
+    setSelectedPlotPart(plotPieces.some((p) => p.id === file) ? file : null);
+  }
+
+  // Leave edit-part mode (the part list stays): tools and selection are dropped.
+  function stopPartEdit() {
+    setPartEditing(false);
     // Drop the orange plot selection so the overview view stays clean.
     setSelectedPlotPart(null);
+    cancelTools();
+  }
+
+  function cancelTools() {
     setCut(null);
     setRotate(null);
     setMerge(null);
@@ -781,6 +898,7 @@ export default function Home() {
     setSmooth(null);
     setNaming(null);
     setDefine(null);
+    setPinPick(null);
   }
 
   // Non-edit-mode: click a part name to highlight its plot lines in blue.
@@ -866,6 +984,7 @@ export default function Home() {
     const touches = (e: PatternEdit): boolean =>
       e.type === "merge" ? ofPart(e.partA) || ofPart(e.partB) : ofPart(e.part);
     const nextEdits = edits.filter((e) => !touches(e));
+    if (partEditing && filename === activePartFile) stopPartEdit();
     setLoadedParts(next);
     setActivePartFile(active);
     setEdits(nextEdits);
@@ -884,8 +1003,15 @@ export default function Home() {
   // Select a part on the plot. Also make it the editor's active part so the two
   // views stay in sync; clearing the plot selection leaves the editor untouched.
   function handlePlotSelect(id: string | null) {
+    if (pinPick) {
+      // Pin mode: a click on another part picks it as the host.
+      if (id && id !== pinPick.part) commitPin(id);
+      return;
+    }
     setSelectedPlotPart(id);
-    if (id) {
+    // In edit-part mode the edited part (JSON tab) stays put; picking pieces of
+    // other parts is for the tools (merge, pin, …).
+    if (id && !partEditing) {
       // A plot piece may be a derived part (e.g. "skirt_2_1"); the JSON editor
       // tracks the loaded part file it was derived from.
       const root = rootPartOf(id, loadedFiles);
@@ -896,9 +1022,39 @@ export default function Home() {
     }
   }
 
+  // ── Pin to part ────────────────────────────────────────────────────────────
+
+  function startPin() {
+    if (!editActive || toolBusy || !selectedPiece) return;
+    setPinPick({ part: selectedPiece.id });
+  }
+
+  // Pin the part to the clicked host: remember where it sits relative to the
+  // host's nearest outline line, so it follows the host on resizes.
+  function commitPin(hostId: string) {
+    if (!pinPick) return;
+    const child = plotPieces.find((p) => p.id === pinPick.part);
+    const host = plotPieces.find((p) => p.id === hostId);
+    if (!child || !host) return;
+    if ((pinGroups[hostId] ?? []).includes(child.id) && host.pinnedTo === child.id) return; // no cycles
+    const { anchor, offset } = pinPlacement(child.geometry, host.geometry);
+    const nextEdits: PatternEdit[] = [...edits, { type: "pin", part: child.id, host: hostId, anchor, offset }];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+    setPinPick(null);
+    setSelectedPlotPart(child.id);
+  }
+
+  function unpinSelected() {
+    if (!selectedPiece?.pinnedTo) return;
+    const nextEdits: PatternEdit[] = [...edits, { type: "unpin", part: selectedPiece.id }];
+    setEdits(nextEdits);
+    persist({ edits: nextEdits });
+  }
+
   // Delete the selected piece as an undoable edit.
   function handleDeleteSelected() {
-    if (!patternEditMode || toolBusy || !selectedPiece) return;
+    if (!editActive || toolBusy || !selectedPiece) return;
     const nextEdits: PatternEdit[] = [...edits, { type: "delete", part: selectedPiece.id }];
     setEdits(nextEdits);
     persist({ edits: nextEdits });
@@ -912,7 +1068,7 @@ export default function Home() {
     if (e.key !== "Delete" && e.key !== "Backspace") return;
     const tgt = e.target as HTMLElement | null;
     if (tgt && (tgt.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName))) return;
-    if (!patternEditMode || toolBusy || !selectedPiece) return;
+    if (!editActive || toolBusy || !selectedPiece) return;
     e.preventDefault();
     handleDeleteSelected();
   };
@@ -927,7 +1083,8 @@ export default function Home() {
   // relative position survives resizing (dx/dy stays as the fallback).
   function handleMovePart(id: string, dx: number, dy: number) {
     if (dx === 0 && dy === 0) return;
-    const rel = relativeMoveAfterDrag(plotPieces, id, dx, dy);
+    const group = pinGroups[id] ?? [id];
+    const rel = relativeMoveAfterDrag(plotPieces.filter((p) => p.id === id || !group.includes(p.id)), id, dx, dy);
     const nextEdits: PatternEdit[] = [...edits, { type: "translate", part: id, dx, dy, ...(rel ? { rel } : {}) }];
     setEdits(nextEdits);
     persist({ edits: nextEdits });
@@ -944,12 +1101,12 @@ export default function Home() {
   // Build the tiled 1:1 PDF of the current pattern (all pieces, edits applied)
   // and download it.
   function handleCreatePdf(settings: PrintSettings) {
-    const title = currentPatternName || "cutavis pattern";
+    const title = titleOf(currentPatternName) || "cutavis pattern";
     const res = buildPatternPdf(plotPieces, settings, printOptions, {
       title,
       info: [
         `Parts: ${plotPieces.map((p) => (p.name ? `${p.name} (${p.id})` : p.id)).join(", ")}`,
-        `Measurements: ${selectedSet} - created ${new Date().toLocaleString()}`,
+        `Measurements: ${sizeLabel(selectedSet)} - created ${new Date().toLocaleString()}`,
       ],
     });
     if (!res) throw new Error("Nothing to print.");
@@ -1170,7 +1327,7 @@ export default function Home() {
   // ── Naming a piece ─────────────────────────────────────────────────────────
 
   function startNaming() {
-    if (!selectedPiece || toolBusy || !patternEditMode) return;
+    if (!selectedPiece || toolBusy || !editActive) return;
     setNaming({ part: selectedPiece.id, value: selectedPiece.name ?? "" });
   }
 
@@ -1312,6 +1469,64 @@ export default function Home() {
     persist({ selectedSet: setName, measurements: newMeasurements, variableSets: newVariableSets });
   }
 
+  function handleSizeSystemChange(name: string) {
+    setSizeSystem(name);
+    persist({ sizeSystem: name });
+  }
+
+  // Startup: take the measurement tables from the CSV (the bundled sets are
+  // only a fallback until it is read). The user's values are kept; variables
+  // they don't have yet (a new CSV row) come from their selected set.
+  function applyMeasurementTables(d: Partial<VariableTables>, storedSet?: string) {
+    const sets = d.measurementSets;
+    if (!sets || Object.keys(sets).length === 0) return;
+    const want = storedSet ?? DEFAULT_SET;
+    const sel = sets[want] ? want : Object.keys(sets)[0];
+    setMeasurementSets(sets);
+    if (d.measurementVariableNames) setMeasurementVariableNames(d.measurementVariableNames);
+    setSizeSystems(d.sizeSystems ?? []);
+    setSelectedSet(sel);
+    setMeasurements((m) => ({ ...sets[sel], ...m }));
+  }
+
+  // Tailor mode, end of the measurement list: re-read measurement_variables.csv
+  // and reset every measurement to its CSV value — each from the size chosen
+  // for it in its row (else the selected size). Body form etc. stay as they are.
+  async function handleReimportMeasurements() {
+    setReimportStatus(null);
+    try {
+      const res = await fetch("/api/variables", { cache: "no-store" });
+      const data = (await res.json()) as VariableTables & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      const sets = data.measurementSets;
+      const keys = Object.keys(sets);
+      if (keys.length === 0) throw new Error("No sizes found in measurement_variables.csv");
+
+      const newSet = keys.includes(selectedSet) ? selectedSet : keys[0];
+      const names = data.measurementVariableNames;
+      const newVariableSets: VariableSets = Object.fromEntries(
+        names.map((n) => [n, keys.includes(variableSets[n]) ? variableSets[n] : newSet])
+      );
+      const newMeasurements: Measurements = Object.fromEntries(
+        names.map((n) => [n, sets[newVariableSets[n]][n] ?? 0])
+      );
+
+      setMeasurementSets(sets);
+      setMeasurementVariableNames(names);
+      setSizeSystems(data.sizeSystems ?? []);
+      setSelectedSet(newSet);
+      setMeasurements(newMeasurements);
+      setVariableSets(newVariableSets);
+      persist({ selectedSet: newSet, measurements: newMeasurements, variableSets: newVariableSets });
+      setReimportStatus({
+        ok: true,
+        msg: `Re-imported ${names.length} measurements (${keys.length} sizes) from measurement_variables.csv.`,
+      });
+    } catch (err) {
+      setReimportStatus({ ok: false, msg: `Re-import failed: ${(err as Error).message}` });
+    }
+  }
+
   function handleVariableSetChange(varName: string, setName: string) {
     const newMeasurements = { ...measurements, [varName]: measurementSets[setName][varName] };
     const newVariableSets = { ...variableSets, [varName]: setName };
@@ -1351,6 +1566,8 @@ export default function Home() {
       setMeasurementSets(data.measurementSets);
       setMeasurementVariableNames(data.measurementVariableNames);
       setBodyformVariables(data.bodyformVariables);
+      setCalculatedDefs(data.calculatedVariables ?? []);
+      setSizeSystems(data.sizeSystems ?? []);
       setSelectedSet(newSet);
       setMeasurements(newMeasurements);
       setVariableSets(newVariableSets);
@@ -1431,6 +1648,16 @@ export default function Home() {
 
   // Load a saved pattern: fetch each referenced part fresh from disk and replay
   // the stored edit history. Replaces whatever is currently loaded.
+  // Display title of a pattern: its `name` field, else the file name.
+  const titleOf = (file: string): string => (file && (patternTitles[file] || file)) || "";
+
+  function refreshPatternTitles() {
+    fetch("/api/pattern-titles", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((t: Record<string, string>) => setPatternTitles(t))
+      .catch(() => {});
+  }
+
   // ── Start page ↔ canvas page navigation ───────────────────────────────────
 
   const patternFromHash = (): string | null => {
@@ -1445,7 +1672,7 @@ export default function Home() {
     if (name !== currentPatternName) {
       if (
         patternDirty &&
-        !window.confirm(`“${currentPatternName || "The current pattern"}” has unsaved changes that will be lost. Open “${name}” anyway?`)
+        !window.confirm(`“${titleOf(currentPatternName) || "The current pattern"}” has unsaved changes that will be lost. Open “${titleOf(name)}” anyway?`)
       ) {
         return;
       }
@@ -1457,6 +1684,7 @@ export default function Home() {
   }
 
   function backToShop() {
+    refreshPatternTitles(); // pick up hand-edited names in the pattern files
     if (window.location.hash) {
       // Push a clean URL (keeps Back/Forward working) and show the start page.
       history.pushState(null, "", window.location.pathname + window.location.search);
@@ -1489,7 +1717,7 @@ export default function Home() {
 
   async function handleLoadPattern(name: string) {
     if (!name) return;
-    let pattern: { parts?: string[]; edits?: PatternEdit[] };
+    let pattern: { name?: string; parts?: string[]; edits?: PatternEdit[] };
     try {
       const res = await fetch(`/api/patterns/${name}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1499,6 +1727,12 @@ export default function Home() {
       return;
     }
     setPatternStatus(null);
+    setPatternTitles((t) => {
+      const next = { ...t };
+      if (typeof pattern.name === "string" && pattern.name.trim()) next[name] = pattern.name.trim();
+      else delete next[name];
+      return next;
+    });
 
     const files = pattern.parts ?? [];
     const parts: LoadedPart[] = await Promise.all(
@@ -1517,6 +1751,7 @@ export default function Home() {
     // Older pattern files name cut pieces "part#A"; normalise to "part_1".
     const patternEdits = migrateEdits(pattern.edits ?? []);
 
+    stopPartEdit(); // a new pattern starts outside edit-part mode
     setLoadedParts(parts);
     setActivePartFile(parts[0]?.file ?? "");
     setEdits(patternEdits);
@@ -1535,7 +1770,10 @@ export default function Home() {
   // Save the current combination (loaded parts + edit history) as a pattern file.
   async function handleSavePattern(name: string) {
     const files = loadedParts.map((p) => p.file);
-    const body = { version: 1, parts: files, edits };
+    // Keep the pattern's title (the `name` field) — saving must not drop it.
+    // Saving under a new file name carries the title over.
+    const title = patternTitles[currentPatternName] ?? patternTitles[name];
+    const body = buildPattern(files, edits, title);
     const res = await fetch(`/api/patterns/${name}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1546,6 +1784,7 @@ export default function Home() {
       throw new Error((data as { error?: string }).error ?? "Save failed");
     }
     setPatternFiles((prev) => (prev.includes(name) ? prev : [...prev, name].sort()));
+    if (title) setPatternTitles((t) => ({ ...t, [name]: title }));
     setCurrentPatternName(name);
     setSavedPatternSig(patternSignature(files, edits));
     setSavePatternModalOpen(false);
@@ -1559,6 +1798,7 @@ export default function Home() {
     return (
       <PatternShop
         patterns={patternFiles}
+        titles={patternTitles}
         currentPattern={currentPatternName}
         currentDirty={patternDirty}
         onOpen={openPattern}
@@ -1575,7 +1815,7 @@ export default function Home() {
         <button className="btn-secondary" onClick={backToShop} title="Back to all patterns">
           ← All patterns
         </button>
-        <h1>{currentPatternName || "Untitled pattern"}</h1>
+        <h1>{titleOf(currentPatternName) || "Untitled pattern"}</h1>
         <span className="checkbox-note">
           {edits.length} edit{edits.length === 1 ? "" : "s"} in history
           {currentPatternName && <> · {patternDirty ? "unsaved changes" : "saved"}</>}
@@ -1589,51 +1829,97 @@ export default function Home() {
           title="Measurements"
           open={measurementsOpen}
           onToggle={() => setMeasurementsOpen((o) => !o)}
-          hint={selectedSet}
+          hint={sizeLabel(selectedSet)}
         >
-                <h2>Measurement set</h2>
+                {sizeSystems.length > 1 && (
+                  <div className="field size-system-field">
+                    <label htmlFor="size-system">Size type</label>
+                    <select
+                      id="size-system"
+                      className="set-select"
+                      value={activeSizeSystem?.name ?? ""}
+                      onChange={(e) => handleSizeSystemChange(e.target.value)}
+                      title="Show the sizes in this size system"
+                    >
+                      {sizeSystems.map((s) => (
+                        <option key={s.name} value={s.name}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <h4>Select or reset to a standard measurement set:</h4>
                 <select
                   className="set-select"
                   value={selectedSet}
                   onChange={(e) => handleSetChange(e.target.value)}
                 >
                   {measurementSetNames.map((name) => (
-                    <option key={name} value={name}>{name}</option>
+                    <option key={name} value={name}>{sizeLabel(name)}</option>
                   ))}
                 </select>
 
-                <h2>Measurements</h2>
-                <table width="100%">
+                <h4>or define & save custom measurements:</h4>
+               <table>
                 {measurementVariableNames.map((name) => (
-                  <tr>
-                  <td className="field" key={name}>
-                    <label htmlFor={`m-${name}`}>{name}</label>
-                  </td>
-                  <td>
-                    <input
-                      id={`m-${name}`}
-                      type="number"
-                      value={measurements[name] ?? 0}
-                      onChange={(e) => handleMeasurementChange(name, Number(e.target.value))}
-                    />
-                  </td>
-                  <td>
-                    <select
-                      className="field-set-select"
-                      value={variableSets[name] ?? selectedSet}
-                      onChange={(e) => handleVariableSetChange(name, e.target.value)}
-                      title={`Load ${name} from set`}
-                    >
-                      {measurementSetNames.map((setName) => (
-                        <option key={setName} value={setName}>{setName}</option>
-                      ))}
-                    </select>
-                  </td>
-                  </tr>
+                  <>
+                    <tr>
+                      <td className="field">
+                        <label htmlFor={`m-${name}`}>{name}</label>
+                      </td>
+                      <td>&nbsp;</td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <input
+                          id={`m-${name}`}
+                          type="number"
+                          value={measurements[name] ?? 0}
+                          onChange={(e) =>
+                            handleMeasurementChange(name, Number(e.target.value))
+                          }
+                        />
+                      </td>
+                      <td>
+                        <select
+                          className="field-set-select"
+                          value={variableSets[name] ?? selectedSet}
+                          onChange={(e) =>
+                            handleVariableSetChange(name, e.target.value)
+                          }
+                          title={`Load ${name} from set`}
+                        >
+                          {measurementSetNames.map((setName) => (
+                            <option key={setName} value={setName}>
+                              {sizeLabel(setName)}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  </>
                 ))}
-                </table>
+              </table>
 
-                <h2>Body form</h2>
+                {tailorMode && (
+                  <div className="reload-csv reimport-measurements">
+                    <button
+                      className="btn-secondary"
+                      onClick={handleReimportMeasurements}
+                      title="Re-read measurement_variables.csv and reset all measurements above to its values"
+                    >
+                      ↻ Re-import measurements from CSV
+                    </button>
+                    <p className="checkbox-note">
+                      Re-reads measurement_variables.csv and resets every measurement to the CSV value of
+                      the size chosen in its row (custom values are replaced).
+                    </p>
+                    {reimportStatus && (
+                      <p className={reimportStatus.ok ? "reload-ok" : "reload-err"}>{reimportStatus.msg}</p>
+                    )}
+                  </div>
+                )}
+
+                <h4>optionally define your body form for an even better fit:</h4>
                 {bodyformVariableNames.map((name) => (
                   <div className="field" key={name}>
                     <label htmlFor={`bf-${name}`}>{name}</label>
@@ -1650,6 +1936,22 @@ export default function Home() {
                     </select>
                   </div>
                 ))}
+
+                {calculatedDefs.length > 0 && (
+                  <>
+                    <h2>Calculated variables</h2>
+                    {calculatedDefs.map((d) => (
+                      <div className="field calc-field" key={d.name} title={`= ${d.formula}`}>
+                        <label>{d.name}</label>
+                        {d.name in calculated.values ? (
+                          <output className="calc-value">{Math.round(calculated.values[d.name] * 1000) / 1000}</output>
+                        ) : (
+                          <span className="reload-err">{calculated.errors[d.name] ?? "not calculated"}</span>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
 
                 {formulaErrors.length > 0 && (
                   <div className="errors">
@@ -1719,6 +2021,42 @@ export default function Home() {
           </Collapsible>
         )}
 
+        {/* Customize pattern: for everyone (not part of tailor mode). */}
+        <Collapsible
+          title="Customize pattern"
+          open={customizeOpen}
+          onToggle={() => setCustomizeOpen((o) => !o)}
+          hint={customVars.length > 0 ? `${customVars.length} value${customVars.length === 1 ? "" : "s"}` : undefined}
+        >
+          {customVars.length === 0 ? (
+            <p className="subtitle">This pattern has no customizable values.</p>
+          ) : (
+            <div className="customize-section">
+              {customVars.map(([name, value]) => (
+                <div className="field" key={name}>
+                  <label htmlFor={`psv-${name}`}>
+                    {name}
+                    {tailorMode && varPartCounts[name] > 1 && (
+                      <span
+                        className="shared-var-badge"
+                        title={`Shared by ${varPartCounts[name]} loaded parts — editing updates all of them`}
+                      >
+                        shared ×{varPartCounts[name]}
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    id={`psv-${name}`}
+                    type="number"
+                    value={value}
+                    onChange={(e) => handlePartVariableChange(name, Number(e.target.value))}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </Collapsible>
+
         {patternEditMode && (
           <Collapsible
             title="Define pattern"
@@ -1727,160 +2065,94 @@ export default function Home() {
             hint={`${loadedParts.length} part${loadedParts.length === 1 ? "" : "s"}`}
           >
             <div className="pattern-tab edit-part-wrap">
-
-                <h2>Parts in this pattern:</h2>
-                {loadedParts.length === 0 ? (
-                  <p className="subtitle">No parts loaded. Add a part to start editing.</p>
-                ) : (
-                  <div className="field">
-                    <label htmlFor="edit-part-select">Editing part</label>
-                    <select
-                      id="edit-part-select"
-                      className="set-select"
-                      value={activePartFile}
-                      onChange={(e) => handleSelectPart(e.target.value)}
-                    >
-                      {loadedParts.map((p) => {
-                        const dirty = p.text !== p.savedText;
-                        return (
-                          <option key={p.file} value={p.file}>
+              <h4>Parts in this pattern:</h4>
+              {loadedParts.length === 0 ? (
+                <p className="subtitle">No parts loaded. Add a part to start editing.</p>
+              ) : (
+                <ul className="part-edit-list">
+                  {loadedParts.map((p) => {
+                    const dirty = p.text !== p.savedText;
+                    const editing = editActive && p.file === activePartFile;
+                    const derived = derivedPartsByFile[p.file] ?? [];
+                    return (
+                      <li key={p.file} className={editing ? "editing" : ""}>
+                        <div className="part-edit-row">
+                          <span className="part-edit-name" title={p.file}>
                             {p.file}
-                            {dirty ? " ●" : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    {activePartFile !== "" && (
-                      <button
-                        className="loaded-part-remove"
-                        onClick={() => handleRemovePart(activePartFile)}
-                        title={`Remove ${activePartFile} from the plot`}
-                        aria-label={`Remove ${activePartFile}`}
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                )}
-                {activePartFile !== "" && derivedPartsByFile[activePartFile]?.length > 0 && (
-                  <div className="field">
-                    <label>Derived parts of {activePartFile} (click to select)</label>
-                    <ul className="pattern-part-list">
-                      {derivedPartsByFile[activePartFile].map((id) => (
-                        <li key={id}>
+                            {dirty && <span className="part-dirty" title="Unsaved JSON changes"> ●</span>}
+                          </span>
                           <button
-                            className={`pattern-part-name${
-                              id === selectedPlotPart ? " highlighted" : ""
-                            }`}
-                            onClick={() => handlePlotSelect(id === selectedPlotPart ? null : id)}
-                            title="Select this part on the plot (move, rotate, cut, merge)"
+                            className={`btn-small ${editing ? "btn-primary" : "btn-secondary"}`}
+                            onClick={() => (editing ? stopPartEdit() : startPartEdit(p.file))}
+                            title={editing ? "Leave edit-part mode" : `Edit ${p.file} (edit tools and JSON)`}
                           >
-                            {id}
-                            {pieceNames[id] && <span className="piece-display-name"> — {pieceNames[id]}</span>}
+                            {editing ? "✓ Done" : "✎ Edit"}
                           </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <button
-                  className="btn-add-part"
-                  onClick={() => setAddModalOpen(true)}
-                  title="Add a part to the plot"
-                >
-                  + Add part
-                </button>
-
-                {activePartFile === "" ? (
-                  <p className="subtitle" style={{ marginTop: 16 }}>
-                    Add a part to start editing.
-                  </p>
-                ) : (
-                  <>
-                    {activePart &&
-                      Object.keys(activePart.part_specific_user_definable_variables ?? {}).length > 0 && (
-                        <div className="customize-section">
-                          <h2>Customize</h2>
-                          {Object.entries(activePart.part_specific_user_definable_variables!).map(
-                            ([name, value]) => (
-                              <div className="field" key={name}>
-                                <label htmlFor={`psv-${name}`}>
-                                  {name}
-                                  {varPartCounts[name] > 1 && (
-                                    <span
-                                      className="shared-var-badge"
-                                      title={`Shared by ${varPartCounts[name]} loaded parts — editing updates all of them`}
-                                    >
-                                      shared ×{varPartCounts[name]}
-                                    </span>
-                                  )}
-                                </label>
-                                <input
-                                  id={`psv-${name}`}
-                                  type="number"
-                                  value={value}
-                                  onChange={(e) =>
-                                    handlePartVariableChange(name, Number(e.target.value))
-                                  }
-                                />
-                              </div>
-                            )
-                          )}
+                          <button
+                            className="loaded-part-remove"
+                            onClick={() => handleRemovePart(p.file)}
+                            title={`Remove ${p.file} and all its edits from the pattern (not undoable)`}
+                            aria-label={`Remove ${p.file}`}
+                          >
+                            ✕
+                          </button>
                         </div>
-                      )}
+                        {editing && derived.length > 0 && (
+                          <div className="field">
+                            <label>Derived parts (click to select)</label>
+                            <ul className="pattern-part-list">
+                              {derived.map((id) => (
+                                <li key={id}>
+                                  <button
+                                    className={`pattern-part-name${id === selectedPlotPart ? " highlighted" : ""}`}
+                                    onClick={() => handlePlotSelect(id === selectedPlotPart ? null : id)}
+                                    title="Select this part on the plot (move, rotate, cut, merge)"
+                                  >
+                                    {id}
+                                    {pieceNames[id] && <span className="piece-display-name"> — {pieceNames[id]}</span>}
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <button
+                className="btn-add-part"
+                onClick={() => setAddModalOpen(true)}
+                title="Add a part to the pattern"
+              >
+                + Add part
+              </button>
 
-                    <h2>Part Definition (JSON) — {activePartFile}</h2>
-                    <textarea
-                      className={`json-editor${activeParseError ? " invalid" : ""}`}
-                      value={activeText}
-                      spellCheck={false}
-                      onChange={(e) => handlePartTextChange(e.target.value)}
-                    />
-                    {activeParseError && (
-                      <div className="errors">
-                        Invalid JSON: <code>{activeParseError}</code>
-                      </div>
-                    )}
+              <hr className="edit-divider" />
 
-                    <div className="edit-part-actions">
-                      <button
-                        className="btn-primary"
-                        onClick={() => setSaveModalOpen(true)}
-                        disabled={!isDirty}
-                        title={isDirty ? "Save changes" : "No unsaved changes"}
-                      >
-                        Save
-                      </button>
-                    </div>
+              <p className="checkbox-note">
+                {edits.length} edit{edits.length === 1 ? "" : "s"} in history
+                {currentPatternName && (
+                  <>
+                    {" · "}
+                    {patternDirty ? "unsaved changes" : `saved as “${currentPatternName}”`}
                   </>
                 )}
+              </p>
 
-                <hr className="edit-divider" />
+              <div className="edit-part-actions">
+                <button
+                  className="btn-primary"
+                  onClick={() => setSavePatternModalOpen(true)}
+                  disabled={loadedParts.length === 0}
+                  title={loadedParts.length === 0 ? "Load parts first" : "Save this pattern"}
+                >
+                  Save pattern
+                </button>
+              </div>
 
-                <p className="checkbox-note">
-                  {edits.length} edit{edits.length === 1 ? "" : "s"} in history
-                  {currentPatternName && (
-                    <>
-                      {" · "}
-                      {patternDirty ? "unsaved changes" : `saved as “${currentPatternName}”`}
-                    </>
-                  )}
-                </p>
-
-                <div className="edit-part-actions">
-                  <button
-                    className="btn-primary"
-                    onClick={() => setSavePatternModalOpen(true)}
-                    disabled={loadedParts.length === 0}
-                    title={loadedParts.length === 0 ? "Load parts first" : "Save this pattern"}
-                  >
-                    Save pattern
-                  </button>
-                </div>
-
-                {patternStatus && !patternStatus.ok && (
-                  <p className="reload-err">{patternStatus.msg}</p>
-                )}
+              {patternStatus && !patternStatus.ok && <p className="reload-err">{patternStatus.msg}</p>}
             </div>
           </Collapsible>
         )}
@@ -1941,10 +2213,18 @@ export default function Home() {
                 ? defineInstruction
                 : naming
                 ? `Name for ${naming.part} (shown on the plot and in the PDF; leave empty to remove):`
+                : pinPick
+                ? `Pin ${pieceLabel(plotPieces.find((p) => p.id === pinPick.part) ?? { id: pinPick.part })}: click the part it shall be pinned to.`
                 : selectedPiece
-                ? `Selected: ${pieceLabel(selectedPiece)}${selectedPiece.name ? ` (${selectedPiece.id})` : ""} — drag on the plot to move it`
-                : patternEditMode
+                ? `Selected: ${pieceLabel(selectedPiece)}${selectedPiece.name ? ` (${selectedPiece.id})` : ""}${
+                    selectedPiece.pinnedTo
+                      ? ` — pinned to ${pieceLabel(plotPieces.find((p) => p.id === selectedPiece.pinnedTo) ?? { id: selectedPiece.pinnedTo })}, moves with it`
+                      : ""
+                  } — drag on the plot to move it`
+                : editActive
                 ? "Click a part on the plot to select it"
+                : patternEditMode
+                ? "Click “Edit” next to a part under “Define pattern” to edit it"
                 : tailorMode
                 ? "Click “Edit pattern” to modify the pattern"
                 : ""}
@@ -2048,7 +2328,17 @@ export default function Home() {
           <div className="plot-body">
             {/* "Edit pattern" toggle above the collapsible edit-tools bar (tailor mode only). */}
             {tailorMode && (
-              <div className={`edit-column${!patternEditMode ? " idle" : editBarCollapsed ? " collapsed" : ""}`}>
+              <div
+                className={`edit-column${
+                  !patternEditMode
+                    ? " idle"
+                    : editBarCollapsed
+                    ? " collapsed"
+                    : editActive && partEditTab === "json"
+                    ? " json"
+                    : ""
+                }`}
+              >
                 <button
                   className={`edit-toggle${patternEditMode ? " active" : ""}`}
                   onClick={patternEditMode ? exitPatternEdit : enterPatternEdit}
@@ -2059,16 +2349,75 @@ export default function Home() {
                     <span className="edit-toggle-label">{patternEditMode ? "Done editing" : "Edit pattern"}</span>
                   )}
                 </button>
-                {patternEditMode && (
-                  <aside className={`edit-bar${editBarCollapsed ? " collapsed" : ""}`} aria-label="Edit tools">
+                {patternEditMode && !editActive && !editBarCollapsed && (
+                  <p className="edit-hint">
+                    Choose a part under “Define pattern” and click ✎ Edit to use the edit tools and the JSON editor.
+                  </p>
+                )}
+                {editActive && (
+                  <aside className={`edit-bar${editBarCollapsed ? " collapsed" : ""}`} aria-label="Edit part">
                     <button
                       className="edit-bar-toggle"
                       onClick={toggleEditBar}
-                      title={editBarCollapsed ? "Expand the edit tools" : "Collapse the edit tools"}
+                      title={editBarCollapsed ? "Expand the edit panel" : "Collapse the edit panel"}
                       aria-expanded={!editBarCollapsed}
                     >
-                      {editBarCollapsed ? "»" : "« Edit tools"}
+                      {editBarCollapsed ? "»" : `« ${activePartFile}`}
                     </button>
+                    {/* Tabs: edit tools or the part's JSON, one visible at a time. */}
+                    <div className="edit-tabs" role="tablist">
+                      <button
+                        role="tab"
+                        aria-selected={partEditTab === "tools"}
+                        className={`edit-tab${partEditTab === "tools" ? " active" : ""}`}
+                        onClick={() => selectPartEditTab("tools")}
+                        title="Edit tools: cut, rotate, merge, …"
+                        aria-label="Edit tools"
+                      >
+                        <span aria-hidden>🛠</span>
+                        {!editBarCollapsed && <span className="edit-tool-label"> Tools</span>}
+                      </button>
+                      <button
+                        role="tab"
+                        aria-selected={partEditTab === "json"}
+                        className={`edit-tab${partEditTab === "json" ? " active" : ""}`}
+                        onClick={() => selectPartEditTab("json")}
+                        disabled={toolBusy}
+                        title={toolBusy ? "Finish or cancel the active tool first" : `Edit the JSON definition of ${activePartFile}`}
+                        aria-label="JSON"
+                      >
+                        <span aria-hidden>{"{ }"}</span>
+                        {!editBarCollapsed && <span className="edit-tool-label"> JSON</span>}
+                        {isDirty && <span className="part-dirty" title="Unsaved JSON changes">●</span>}
+                      </button>
+                    </div>
+                    {partEditTab === "json" ? (
+                      !editBarCollapsed && (
+                        <div className="edit-json">
+                          <textarea
+                            className={`json-editor${activeParseError ? " invalid" : ""}`}
+                            value={activeText}
+                            spellCheck={false}
+                            onChange={(e) => handlePartTextChange(e.target.value)}
+                            aria-label={`JSON definition of ${activePartFile}`}
+                          />
+                          {activeParseError && (
+                            <div className="errors">
+                              Invalid JSON: <code>{activeParseError}</code>
+                            </div>
+                          )}
+                          <button
+                            className="btn-primary"
+                            onClick={() => setSaveModalOpen(true)}
+                            disabled={!isDirty}
+                            title={isDirty ? "Save changes" : "No unsaved changes"}
+                          >
+                            Save part
+                          </button>
+                        </div>
+                      )
+                    ) : (
+                    <>
                     {editTools.map((t) => (
                       <button
                         key={t.key}
@@ -2135,6 +2484,11 @@ export default function Home() {
                               Abort
                             </button>
                           </>
+                        )}
+                        {pinPick && (
+                          <button className="btn-secondary" onClick={() => setPinPick(null)} title="Cancel pinning">
+                            Abort pinning
+                          </button>
                         )}
                         {naming && (
                           <>
@@ -2309,6 +2663,8 @@ export default function Home() {
                         )}
                       </div>
                     )}
+                    </>
+                    )}
                   </aside>
                 )}
               </div>
@@ -2323,7 +2679,7 @@ export default function Home() {
                   showPoints={showPoints}
                   selectedPart={selectedPlotPart}
                   highlightedPart={highlightedPart}
-                  editMode={patternEditMode}
+                  editMode={editActive}
                   activePart={activePartFile}
                   onSelectPart={handlePlotSelect}
                   onMovePart={handleMovePart}
@@ -2366,6 +2722,8 @@ export default function Home() {
                       : null
                   }
                   allowances={allowanceByPiece}
+                  groups={pinGroups}
+                  pickOnly={pinPick != null}
                   define={
                     define
                       ? {

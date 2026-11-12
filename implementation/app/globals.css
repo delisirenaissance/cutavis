@@ -4,7 +4,7 @@
   --border: #2a2f3a;
   --text: #0f1115;
   --muted: #495366;
-  --accent: #000000;
+  --accent: rgb(255, 72, 194);
   --error: #ff6b6b;
 }
 
@@ -101,7 +101,7 @@ body {
   border: none;
   color: var(--text);
   padding: 10px 12px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   cursor: pointer;
   text-align: left;
@@ -196,7 +196,7 @@ body {
 
 .shop-hero h1 {
   font-size: clamp(20px, 6vw, 40px);
-  margin: 0 0 12px;
+  margin: 0 0 0px;
   letter-spacing: 0.06em;
 }
 
@@ -520,7 +520,7 @@ body {
   gap: 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #0f1115;
+  background: #ffffff;
   overflow: hidden;
 }
 
@@ -597,7 +597,7 @@ body {
   flex: 1;
   width: 100%;
   min-height: 0;
-  background: #0f1115;
+  background: #ffffff;
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
@@ -722,7 +722,7 @@ h2:first-child {
   flex: 1;
   min-width: 0;
   max-width: 230px;
-  background: #0f1115;
+  background: #ffffff;
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
@@ -826,7 +826,7 @@ h2:first-child {
 }
 
 .specify-field select {
-  background: #0f1115;
+  background: #ffffff;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -899,7 +899,7 @@ h2:first-child {
   min-height: 220px;
   width: 100%;
   resize: vertical;
-  background: #0f1115;
+  background: #ffffff;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -912,6 +912,21 @@ h2:first-child {
 .define-json:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Calculated variables: read-only derived values in the measurements section. */
+.calc-field {
+  align-items: baseline;
+}
+
+.calc-value {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color: var(--accent);
+  padding: 4px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  min-width: 70px;
+  display: inline-block;
 }
 
 .btn-small {
@@ -1247,7 +1262,7 @@ svg {
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #0f1115;
+  background: #ffffff;
   overflow: hidden;
 }
 
@@ -1472,7 +1487,7 @@ svg {
   width: 42px;
   padding: 2px 4px;
   font-size: 12px;
-  background: #0f1115;
+  background: #ffffff;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1607,6 +1622,121 @@ svg {
   font-family: inherit;
 }
 
+/* ── Define pattern: part list with Edit / remove ───────── */
+
+.part-edit-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.part-edit-list > li {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 4px 4px 10px;
+}
+
+.part-edit-list > li.editing {
+  border-color: var(--accent);
+  background: rgba(110, 168, 254, 0.08);
+}
+
+.part-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.part-edit-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.part-dirty {
+  color: var(--accent);
+  margin-left: 3px;
+}
+
+.collapsible-body .customize-section {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* ── Edit column: hint, Tools / JSON tabs ───────────────── */
+
+.edit-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.edit-column.json {
+  flex-basis: 420px;
+}
+
+.edit-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.edit-bar.collapsed .edit-tabs {
+  flex-direction: column;
+  border-bottom: none;
+}
+
+.edit-tab {
+  flex: 1;
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+  padding: 6px 4px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.edit-bar.collapsed .edit-tab {
+  border-radius: 6px;
+  border-bottom: 1px solid transparent;
+}
+
+.edit-tab.active {
+  color: var(--accent);
+  border-color: var(--border);
+  background: rgba(110, 168, 254, 0.12);
+  font-weight: 600;
+}
+
+.edit-tab:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.edit-json {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.edit-json .json-editor {
+  min-height: 300px;
+}
+
 /* ── Phones: canvas full width, edit tools as a bottom icon bar ───────── */
 
 @media (max-width: 700px) {
@@ -1731,5 +1861,48 @@ svg {
   .shop-topbar {
     top: 10px;
     right: 12px;
+  }
+
+  /* Edit-part tabs as icons in the bottom bar; the JSON tab opens as a sheet. */
+  .edit-hint {
+    display: none;
+  }
+
+  .edit-tabs,
+  .edit-bar.collapsed .edit-tabs {
+    flex-direction: row;
+    flex: 0 0 auto;
+    border-bottom: none;
+    margin: 0 4px 0 0;
+  }
+
+  .edit-tab,
+  .edit-bar.collapsed .edit-tab {
+    flex: 0 0 auto;
+    padding: 8px 9px;
+    font-size: 16px;
+    border-radius: 6px;
+    border-bottom: 1px solid transparent;
+  }
+
+  .edit-tab.active {
+    border-color: var(--border);
+  }
+
+  .edit-json {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 56px;
+    z-index: 49;
+    height: 55vh;
+    padding: 10px 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.3);
+  }
+
+  .edit-json .json-editor {
+    min-height: 0;
   }
 }

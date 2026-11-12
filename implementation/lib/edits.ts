@@ -13,11 +13,20 @@
 // applyEditsToGeometry — the surrounding machinery (history, undo, persistence,
 // per-part rendering) does not need to change.
 
-import type { GeometryResult } from "./geometry";
+import { boundsWithCircles, type GeometryResult, type ResolvedCircle } from "./geometry";
+
+/** Apply f to every circle (keeps the names). */
+function mapCircles(
+  circles: Record<string, ResolvedCircle>,
+  f: (c: ResolvedCircle) => ResolvedCircle
+): Record<string, ResolvedCircle> {
+  return Object.fromEntries(Object.entries(circles).map(([k, c]) => [k, f(c)]));
+}
 import { splitGeometry, resolveAnchorPoint, mergeGeometryPair, type CutBow, type SplitAnchor } from "./split";
 import { allowanceTypeOf, type AllowanceType, type LineSpec, type LineType, type MergeMarker } from "./types";
 import { smoothGeometry } from "./smooth";
 import { resolveRelativeMove, type RelativeMove } from "./relativeMove";
+import { partContains, pinDelta, refPoint } from "./pin";
 import { evaluateDefinedPart, measureValues, type PartMeasure } from "./definePart";
 import type { Measurements, PartDef } from "./types";
 
@@ -69,7 +78,13 @@ export type PatternEdit =
     }
   /** Delete a piece (any kind: loaded part, cut piece, merged or defined
    *  part). Undoable like every edit — undo brings it back. */
-  | { type: "delete"; part: string };
+  | { type: "delete"; part: string }
+  /** Pin a part (e.g. a button hole) to its host part: it is re-placed
+   *  relative to `anchor` on the host (+ `offset`) on every replay, and
+   *  moves/rotations of either part apply to the whole combination. */
+  | { type: "pin"; part: string; host: string; anchor: SplitAnchor | null; offset: { x: number; y: number } }
+  /** Release a pin. */
+  | { type: "unpin"; part: string };
 
 /** The line spec a lineSpec edit sets. The allowance is always derived from
  *  the line type, so a "fold" line can never carry a seam allowance. */
@@ -82,12 +97,15 @@ function lineSpecFromEdit(e: Extract<PatternEdit, { type: "lineSpec" }>): LineSp
  *  `edits` is the ordered history applied to them. */
 export interface PatternFile {
   version: 1;
+  /** Display title of the pattern (shown on the start page, the canvas page
+   *  and in the PDF). Optional; the file name is used when absent. */
+  name?: string;
   parts: string[];
   edits: PatternEdit[];
 }
 
-export function buildPattern(parts: string[], edits: PatternEdit[]): PatternFile {
-  return { version: 1, parts, edits };
+export function buildPattern(parts: string[], edits: PatternEdit[], name?: string): PatternFile {
+  return { version: 1, ...(name ? { name } : {}), parts, edits };
 }
 
 /** Stable string used to detect unsaved changes to the current pattern. */
@@ -127,7 +145,8 @@ function translateGeometry(g: GeometryResult, dx: number, dy: number): GeometryR
         maxY: g.bbox.maxY + dy,
       }
     : null;
-  return { ...g, points, paths, bbox };
+  const circles = g.circles ? mapCircles(g.circles, (c) => ({ ...c, cx: c.cx + dx, cy: c.cy + dy })) : undefined;
+  return { ...g, points, paths, bbox, ...(circles ? { circles } : {}) };
 }
 
 const NUM_RE = /-?\d*\.?\d+(?:[eE][-+]?\d+)?/g;
@@ -170,7 +189,14 @@ function rotateGeometry(g: GeometryResult, cx: number, cy: number, angle: number
       minY = Math.min(minY, vals[i + 1]); maxY = Math.max(maxY, vals[i + 1]);
     }
   }
-  return { ...g, points, paths, bbox: any ? { minX, minY, maxX, maxY } : g.bbox };
+  const circles = g.circles
+    ? mapCircles(g.circles, (c) => {
+        const x = c.cx - cx, y = c.cy - cy;
+        return { ...c, cx: cx + x * cos - y * sin, cy: cy + x * sin + y * cos };
+      })
+    : undefined;
+  const bbox = boundsWithCircles(any ? { minX, minY, maxX, maxY } : g.bbox, circles);
+  return { ...g, points, paths, bbox, ...(circles ? { circles } : {}) };
 }
 
 /**
@@ -208,6 +234,8 @@ export interface PartPiece {
   geometry: GeometryResult;
   /** Display name set by a `rename` edit (or inherited); absent → show `id`. */
   name?: string;
+  /** Id of the part this one is pinned to (see the "pin" edit). */
+  pinnedTo?: string;
 }
 
 /** The label to show for a piece: its display name, else its id. */
@@ -283,6 +311,45 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[], vars
   // "<A> + <B>" (falling back to ids) when either side is named.
   const names = new Map<string, string>();
   for (const b of bases) if (b.name) names.set(b.id, b.name);
+  // Pins: pinned part → host. A "combination" is a host with everything pinned
+  // to it (transitively); moves/rotations apply to the whole combination.
+  const pins = new Map<string, string>();
+  const rootOf = (id: string): string => {
+    let cur = id;
+    for (let guard = 0; pins.has(cur) && guard < 1000; guard++) cur = pins.get(cur)!;
+    return cur;
+  };
+  const groupOf = (id: string): string[] => {
+    const root = rootOf(id);
+    return [...pieces.keys()].filter((k) => rootOf(k) === root);
+  };
+  // The part plus everything (transitively) pinned to it.
+  const subtreeOf = (id: string): string[] =>
+    [...pieces.keys()].filter((k) => {
+      let cur: string | undefined = k;
+      for (let guard = 0; cur && guard < 1000; guard++) {
+        if (cur === id) return true;
+        cur = pins.get(cur);
+      }
+      return false;
+    });
+  const shift = (ids: string[], dx: number, dy: number) => {
+    for (const id of ids) {
+      const g = pieces.get(id);
+      if (g) pieces.set(id, translateGeometry(g, dx, dy));
+    }
+  };
+  // When a host is replaced (cut/merge), re-pin its pinned parts: to the new
+  // piece containing their reference point, else to the given fallback.
+  const repinChildrenOf = (oldIds: string[], newIds: string[], fallback?: string) => {
+    for (const [child, host] of [...pins.entries()]) {
+      if (!oldIds.includes(host)) continue;
+      const ref = pieces.get(child) ? refPoint(pieces.get(child)!) : null;
+      const into = (ref && newIds.find((n) => partContains(pieces.get(n)!, ref))) || fallback;
+      if (into) pins.set(child, into);
+      else pins.delete(child);
+    }
+  };
 
   for (const e of edits) {
     if (e.type === "translate") {
@@ -290,7 +357,7 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[], vars
       if (!g) continue;
       const other = e.rel ? pieces.get(e.rel.other) : undefined;
       const d = (e.rel && other && resolveRelativeMove(g, other, e.rel)) || { dx: e.dx, dy: e.dy };
-      pieces.set(e.part, translateGeometry(g, d.dx, d.dy));
+      shift(groupOf(e.part), d.dx, d.dy);
     } else if (e.type === "split") {
       const g = pieces.get(e.part);
       if (!g) continue;
@@ -302,6 +369,12 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[], vars
       if (ids.some((id) => pieces.has(id))) continue;
       pieces.delete(e.part);
       halves.forEach((h, i) => pieces.set(ids[i], h.geometry));
+      // The cut part's own pin passes to all its pieces; parts pinned to it go
+      // to the piece they lie in.
+      const ownHost = pins.get(e.part);
+      pins.delete(e.part);
+      if (ownHost) ids.forEach((id) => pins.set(id, ownHost));
+      repinChildrenOf([e.part], ids);
       const parentName = names.get(e.part);
       names.delete(e.part);
       if (parentName) ids.forEach((id, i) => names.set(id, `${parentName} (${i + 1})`));
@@ -310,7 +383,10 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[], vars
       if (!g) continue;
       const c = resolveAnchorPoint(g, e.center);
       if (!c) continue; // center line gone → leave the piece unrotated
-      pieces.set(e.part, rotateGeometry(g, c.x, c.y, e.angle));
+      for (const id of groupOf(e.part)) {
+        const gi = pieces.get(id);
+        if (gi) pieces.set(id, rotateGeometry(gi, c.x, c.y, e.angle));
+      }
     } else if (e.type === "merge") {
       const gA = pieces.get(e.partA);
       const gB = pieces.get(e.partB);
@@ -321,6 +397,11 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[], vars
       pieces.delete(e.partB);
       const mergedId = `${e.partA}&${e.partB}`;
       pieces.set(mergedId, merged);
+      const ownHost = pins.get(e.partA) ?? pins.get(e.partB);
+      pins.delete(e.partA);
+      pins.delete(e.partB);
+      if (ownHost && ownHost !== mergedId) pins.set(mergedId, ownHost);
+      repinChildrenOf([e.partA, e.partB], [], mergedId);
       const nA = names.get(e.partA), nB = names.get(e.partB);
       names.delete(e.partA);
       names.delete(e.partB);
@@ -354,11 +435,33 @@ export function applyPatternEdits(bases: PartPiece[], edits: PatternEdit[], vars
     } else if (e.type === "delete") {
       pieces.delete(e.part);
       names.delete(e.part);
+      pins.delete(e.part);
+      for (const [child, host] of [...pins.entries()]) if (host === e.part) pins.delete(child);
+    } else if (e.type === "pin") {
+      const child = pieces.get(e.part);
+      const host = pieces.get(e.host);
+      if (!child || !host || e.part === e.host) continue;
+      if (subtreeOf(e.part).includes(e.host)) continue; // would create a cycle
+      // Snap: re-place the pinned part (with whatever is pinned to it)
+      // relative to the anchor on the host's current geometry.
+      if (e.anchor) {
+        const d = pinDelta(child, host, e.anchor, e.offset);
+        if (d) shift(subtreeOf(e.part), d.dx, d.dy);
+      }
+      pins.set(e.part, e.host);
+    } else if (e.type === "unpin") {
+      pins.delete(e.part);
     }
   }
 
   return [...pieces.entries()].map(([id, geometry]) => {
     const name = names.get(id);
-    return name ? { id, geometry, name } : { id, geometry };
+    const pinnedTo = pins.get(id);
+    return {
+      id,
+      geometry,
+      ...(name ? { name } : {}),
+      ...(pinnedTo && pieces.has(pinnedTo) ? { pinnedTo } : {}),
+    };
   });
 }

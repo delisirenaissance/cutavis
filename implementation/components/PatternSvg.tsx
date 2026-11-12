@@ -112,6 +112,10 @@ interface Props {
   allowances?: Record<string, Vec2[]>;
   /** When set, the "Define part" mode is active (measuring / part preview). */
   define?: DefineOverlay | null;
+  /** Pinned combinations: piece id → all piece ids moved/rotated with it. */
+  groups?: Record<string, string[]>;
+  /** Pick mode (e.g. choosing a pin host): a click only selects, no dragging. */
+  pickOnly?: boolean;
 }
 
 interface Box {
@@ -169,6 +173,8 @@ export function PatternSvg({
   merge = null,
   allowances = {},
   define = null,
+  groups = {},
+  pickOnly = false,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -288,6 +294,7 @@ export function PatternSvg({
     e.preventDefault();
     e.stopPropagation();
     onSelectPart(id);
+    if (pickOnly) return; // picking, not moving
     setDrag({ id, startClientX: e.clientX, startClientY: e.clientY, dx: 0, dy: 0, moved: false });
   }
 
@@ -505,12 +512,14 @@ export function PatternSvg({
         // In edit-mode, every piece not belonging to the part picked in the
         // dropdown is dimmed (thinner, medium grey) so the active part stands out.
         const isDimmed = editMode && activePart != null && !belongsToPart(part.id, activePart);
-        const isDragging = drag?.id === part.id;
+        // A drag/rotation preview moves the whole pinned combination.
+        const isDragging = drag != null && (groups[drag.id] ?? [drag.id]).includes(part.id);
         const tx = isDragging ? drag!.dx : 0;
         const ty = isDragging ? drag!.dy : 0;
         // Live rotation preview: while dragging a rotation, transform the piece's
         // group about the chosen center.
-        const isRotating = !!rotate && !!rotDrag && !!rotate.center && part.id === rotate.partId;
+        const isRotating =
+          !!rotate && !!rotDrag && !!rotate.center && (groups[rotate.partId] ?? [rotate.partId]).includes(part.id);
         const transform = isRotating
           ? `rotate(${(rotDrag!.angle * 180) / Math.PI} ${rotate!.center!.x} ${rotate!.center!.y})`
           : tx || ty
@@ -527,7 +536,7 @@ export function PatternSvg({
             transform={transform}
             onMouseDown={(e) => startDrag(e, part.id)}
             style={{
-              cursor: editMode && !rotate ? (isDragging ? "grabbing" : "grab") : "default",
+              cursor: pickOnly ? "pointer" : editMode && !rotate ? (isDragging ? "grabbing" : "grab") : "default",
             }}
           >
             {/* Seam allowance (cutting line) around the piece. */}
@@ -579,6 +588,28 @@ export function PatternSvg({
                     strokeDasharray={isAux ? `${unit * 3} ${unit * 2}` : undefined}
                     strokeLinecap="round"
                     strokeLinejoin="round"
+                    pointerEvents="none"
+                  />
+                </g>
+              );
+            })}
+
+            {/* Circles (e.g. button holes), styled like lines; aux ones only
+                when aux lines are shown. A wide transparent stroke makes them
+                easy to grab. */}
+            {Object.entries(g.circles ?? {}).map(([name, c]) => {
+              const isAux = c.lineType === "aux";
+              if (isAux && !showAuxLines) return null;
+              const stroke = isAux
+                ? isDimmed ? "#bbb" : isHighlighted ? "#8ab4f8" : "#999"
+                : isDimmed ? "#888" : isHighlighted ? "#1a73e8" : isSelected ? "#d8431b" : "#111";
+              return (
+                <g key={`circle-${name}`}>
+                  <circle cx={c.cx} cy={c.cy} r={c.r} fill="none" stroke="transparent" strokeWidth={unit * 4} />
+                  <circle
+                    cx={c.cx} cy={c.cy} r={c.r} fill="none" stroke={stroke}
+                    strokeWidth={isAux || isDimmed ? unit * 0.6 : isHighlighted ? unit * 1.6 : unit * 1.0}
+                    strokeDasharray={isAux ? `${unit * 3} ${unit * 2}` : undefined}
                     pointerEvents="none"
                   />
                 </g>

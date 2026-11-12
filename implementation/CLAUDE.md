@@ -15,15 +15,104 @@ running (they share `.next` and it corrupts; restart `npm run dev` to recover).
   Each line has `linePointReferences: [start, c1, c2, end]` (a straight line is
   `[A,A,B,B]`), `lineType` = `seam` | `hem` | `aux`, and an optional `condition`
   that hides the line when false.
+- **Geo functions** (`"x&y": "f:name(args)"`, geometry.ts; arguments are split
+  at top-level commas only, so an argument may be a formula with a call; a
+  bare number as a line argument means `L<n>` (`resolveLineName`)):
+  - `intersectLines(L1, L2)`: the first crossing (straight lines are extended).
+  - `lotPointOnLineAtDistance(L, along, offset)`: a point on the perpendicular.
+  - `prolongLineToReachLength(L, d, e = EP)` (old name
+    `prolongStraightLineToReachLength` = alias, same behaviour): the end point
+    of line L extended to total length d. With `EP`, the start stays and the
+    line is extended beyond the end; with `SP`, the other way round. `e` may be
+    quoted or a formula yielding SP/EP (`if(hAbn < 4.5, SP, EP)`; Excel `;`
+    works). L itself is unchanged.
+    - Length = arc length (`pointAlongBezier`, = chord when straight).
+    - The extension is straight along control point → end (C2→EP / C1→SP), so
+      it continues the curve's tangent. If that control point coincides with
+      the end (straight `[A,A,B,B]`), the next one is used, then the other end.
+    - A d shorter than L gives the point ON L at arc length d from the fixed
+      end. A negative d is an error.
+    - Verified: straight results identical to the old function; a curve gives
+      arc + extension = d, collinear with the end tangent.
+  - `prolongLineToAddLength(L, a, e = EP)` (the spelling `…AddLenght` is
+    accepted too): the same, with total length = length of L + a. a = 0 gives
+    the end point itself. A negative a shortens (the point lies on L), and
+    shortening by more than L's length is an error. Same code path
+    (`PROLONG_FUNCS` / `PROLONG_ADD_FUNCS`).
+  - Variables used ONLY inside x&y arguments are not in `collectVariables`, so
+    an undefined one is reported as an error ("undefined variable") instead of
+    silently becoming 0.
 - **Evaluation** `evaluatePart(part, measurements)` in `lib/geometry.ts` →
   `GeometryResult { points, paths (SVG "M x y C …" keyed by line name),
   lineTypes, localValues, bbox, errors }`. After this, there are no formulas.
-- **Pattern** `patterndefinitions/<name>.json` = `{ version:1, parts:[fileIds],
+- **Pattern** `patterndefinitions/<name>.json` = `{ version:1, name?, parts:[fileIds],
   edits:[PatternEdit…] }`. API: `/api/patterns`, `/api/patterns/[name]`,
-  `/api/parts`, `/api/parts/[name]`.
+  `/api/pattern-titles` (`{file: name}`), `/api/parts`, `/api/parts/[name]`.
+  - **`name` = display title** (hand-edited in the JSON; no editor UI). Used on
+    the start-page cards, the canvas header and the PDF (document title,
+    overview heading, tile footers, download file name). Fallback = file name.
+    Page: `patternTitles` state + `titleOf(file)`; refreshed on mount, on
+    load and when returning to the start page.
+  - Saving goes through `buildPattern(parts, edits, title)`, which PRESERVES
+    `name` (key order version, name, parts, edits). Saving under a new file
+    name carries the title over. `patternSignature` ignores it (no dirty flag).
 - **Variables**: measurement sets (`lib/measurementSets.ts`) + body-form values
-  (`lib/bodyformVariables.ts`) + each part's own user variables. Page scope for a
-  part = `{...measurements, ...bodyformValues, ...part_specific}`.
+  (`lib/bodyformVariables.ts`) + calculated variables + each part's own user
+  variables. Page scope for a part =
+  `{...measurements, ...bodyformValues, ...calculated, ...part_specific}`.
+- **Measurement CSV / size types** (`../measurement_variables.csv`,
+  `parseMeasurementCsv` in `lib/variableCsv.ts`):
+  - One header row per size type (`International sizes:;M;L`,
+    `European sizes:;38 (EU);40 (EU)`; a header = first cell ending in `:`, or
+    the older `measurement_variable` row), then the data rows.
+  - Set KEY = the label in the LAST header row (so "38 (EU)" stays the key,
+    as with the old single header). `sizeSystems: {name, labels{key→label}}[]`
+    is returned by `/api/variables`.
+  - Page: on mount the tables come from the CSV (`applyMeasurementTables`;
+    the bundled `lib/measurementSets.ts` is only a fallback). Stored values are
+    kept, and missing variables are filled from the selected set.
+  - The "Size type" dropdown (shown if > 1 type, for everyone, persisted
+    `sizeSystem`) only RELABELS the sizes (`sizeLabel(key)`) in the set
+    dropdowns, the section hint and the PDF.
+  - Tailor mode: "↻ Re-import measurements from CSV" at the end of the
+    measurement list (`handleReimportMeasurements`) resets every measurement
+    to the CSV value of the size chosen in its row (custom values are
+    replaced). The older "Reload from CSV files" (all CSVs) stays at the end of
+    the section.
+- **Calculated variables** (`../calculated_variables.csv`,
+  `lib/calculatedVariables.ts`):
+  - CSV: header `calculated_variable;formula`, one row per variable. The
+    formulas are Excel style and QUOTED, since Excel's argument separator `;` is
+    also the file's column separator, so the reader is quote-aware
+    (`parseCalculatedCsv`; the other CSV parsers split naively).
+  - `excelToExpr` translates to expr-eval: leading `=` dropped, `IF(c;a;b)` →
+    `if(c,a,b)` (any case, nesting is fine), `;` → `,`, `<>` → `!=`, `=` →
+    `==`, `AND/OR/NOT(...)` → operators. Decimals must use `.`.
+  - `evaluateCalculated(defs, {measurements + body-form})` resolves
+    dependencies (a variable may use another one, in any file order) and
+    returns `{values, errors}`. Errors (unknown variable, cycle, invalid
+    formula, name clash with a measurement — the measurement wins) leave only
+    that variable out; the others still work.
+  - The API `/api/variables` returns `calculatedVariables` (file optional); the
+    page loads them on mount and on "Reload from CSV files", derives `calculated`
+    in a memo, and merges the values into `variableValues`, which feeds parts,
+    defined parts, conditions etc. It re-evaluates on every measurement /
+    body-form change. Shown read-only under "Calculated variables" in the
+    Measurements section (tooltip = formula, errors in red).
+  - Uses the same built-in-name stripping as part formulas (`length` etc.).
+  - Simple arithmetic (`isSimpleArithmetic`: only names, numbers,
+    `+ - * / ( )`, no function call), quoted or not, with or without a leading
+    `=`, is taken as it is. Decimal commas are allowed there (`BrU*0,5`), since
+    such a formula has no argument lists. It is evaluated by expr-eval, never
+    by JS `eval()`. Outside simple arithmetic, decimals must use `.`.
+  - In part JSON just use the name (`"y": "AlT + AlT_Zg"`). Don't redefine a
+    calculated variable as a local variable: the local shadows the CSV value.
+  - Part formulas (locals, point x/y, radii, conditions) also accept the
+    Excel syntax (`normalizeFormulas` in geometry.ts → `excelToExpr`), but
+    only formulas with `;`, `<>` or a leading `=`. Before this, `;` (the
+    expr-eval sequence operator) silently gave NaN.
+  - Verified on the real CSV: 38 → AlT 19.8 / ArD 9.5 / BrB 18; 40 → 20.2 /
+    10.5 / 18.5, and all branches of the nested formulas.
 
 ## Edit model (`lib/edits.ts`, the single extension point)
 
@@ -47,7 +136,7 @@ running (they share `.next` and it corrupts; restart `npm run dev` to recover).
     (`resolveStoredRun`, used by `smoothGeometry`):
     - Why: generated names (`merge`, `merge#2`, `cut#3`, and fragment
       duplicates `L12#2`) are assigned in outline-walk order and get RESHUFFLED
-      when geometry changes. Seen in basicSkirt.json: the stored `merge` later
+      when geometry changes. Seen in saddleSkirt.json: the stored `merge` later
       named a bridge on the other edge, and the smoothing was silently skipped.
     - How: kind = name without `#n` / `~…`. The stored sequence is searched
       as a consecutive run in either direction, and the candidate with the
@@ -131,6 +220,38 @@ running (they share `.next` and it corrupts; restart `npm run dev` to recover).
     two lines being aligned.
   - Verified: front/back hems pulled together at size 38 stay 0.000 cm apart
     at size 40 (an absolute move drifts 0.75 cm).
+- **Circles** (part JSON `circles: { name: { lineType, centerPoint, radius,
+  condition? } }`, e.g. `patternpartdefinitions/buttonhole.json`):
+  - `radius` is a formula (variables, point refs); `condition` works as for
+    lines. Evaluated into `GeometryResult.circles {cx, cy, r, lineType}`, and
+    the bbox includes them (`boundsWithCircles`).
+  - They are MARKINGS: not in `paths`, so no outline and no seam allowance
+    (a button hole part has no closed outline).
+  - They are carried by translate/rotate/definePart placement/smooth. A cut
+    keeps a circle with the piece containing its centre (`pieceToGeometry`); a
+    merge unions them.
+  - Drawn in PatternSvg (aux only with "show aux lines"; a wide transparent
+    stroke makes them clickable) and in the PDF as four cubic arcs
+    (`circleCurves`).
+- **Pins** (`pin{part, host, anchor, offset}` / `unpin{part}`, `lib/pin.ts`):
+  - The pinned part's reference point (bbox centre) is stored relative to the
+    nearest point on the host's outline (`anchor` = line + definition-direction
+    t, plus `offset`). On replay it is re-placed there, so it follows the host
+    on resizes (verified: size 38 → 40 keeps the offset exactly).
+  - Replay keeps a `pins` map. translate/rotate apply to the whole
+    combination (`groupOf` = everything with the same root host).
+  - A cut host passes its own pin to all pieces, and its pinned parts are
+    re-pinned to the piece containing their reference point. A merge passes
+    pins to the merged id. Deleting a host releases its parts. Cycles are
+    refused.
+  - `PartPiece.pinnedTo`; page `pinGroups` → PatternSvg `groups`, so the
+    drag/rotate preview moves the whole combination.
+  - UI: "📌 Pin to part" (`pinPick` state, in `toolBusy`): select the part,
+    click the tool, click the host (`pickOnly`: clicks pick, no drag). For a
+    pinned part the tool is "Unpin part".
+  - Relative moves exclude the part's own combination when choosing the
+    anchor neighbour.
+  - Rotate needs a closed outline, so rotate a combination via its host.
 - **Delete** (`delete{part}` edit): removes any piece (loaded, cut, merged,
   defined) and its name; later edits on it are skipped; undo restores it.
   UI: "🗑 Delete part" (edit toolbar, selected piece) or the Del/Backspace key
@@ -293,7 +414,7 @@ leaves it.
     the loop direction, which flipped at isolated measurement values.
   - Merged and smoothed pieces store their lines in loop direction, so `L11`
     etc. were reversed there, and cut anchors (t along the stored path) landed
-    mirrored. basicSkirt.json: the front saddle jumped 5.6 → 8.1 cm at TaU
+    mirrored. saddleSkirt.json: the front saddle jumped 5.6 → 8.1 cm at TaU
     73.2 / 74.6 / 76.7, and the back saddle 6.8 → 8.6 cm at seven values.
   - Fix: areas are compared with a relative tolerance (1e-9); ties prefer
     POSITIVE orientation, and the chosen loop is normalised to positive (old
@@ -302,7 +423,7 @@ leaves it.
     in 0.05 steps; old and new differ ONLY at the former spike values.
   - Debug recipe: sweep a measurement, then bisect the edit history between a
     good and a bad value, comparing piece bboxes per edit.
-- **Dart topology switch in basicSkirt_backPart** (analysed 2026-11-07):
+- **Dart topology switch in saddleSkirt_backPart** (analysed 2026-11-07):
   - Lines L13–L16 (one dart) exist when `abs(hAbn) < 4.5`; L24–L30 (two
     darts) exist when `abs(hAbn) >= 4.5`.
   - `hAbn = (TaU − HueU − 1)/4 − 1.5·waistform − 0.75·hipbones`, so the part
@@ -311,9 +432,9 @@ leaves it.
     always give two darts; only edited waist/hip values flip it.
   - In one-dart mode the cut gives 3 pieces instead of 4, and _3 is a
     DIFFERENT physical piece. Every edit that names L24–L30 or piece _4 is
-    skipped silently: in basicSkirt.json, merges #11/#12 and the smoothings on
+    skipped silently: in saddleSkirt.json, merges #11/#12 and the smoothings on
     their result.
-  - basicSkirt.json mixes both states: #11/#12 merge two-dart legs (L28/L27,
+  - saddleSkirt.json mixes both states: #11/#12 merge two-dart legs (L28/L27,
     L25/L24), while #49–#54 redo the merge with one-dart legs (L15/L14). Only
     one of the two groups can ever apply.
   - Fix ideas: make the part topology-stable (always define both darts and let
@@ -355,10 +476,29 @@ leaves it.
       if there are unsaved changes, then calls `handleLoadPattern`.
   - **Canvas page**: a header (← All patterns, pattern name, edit count,
     saved/unsaved), a left panel of `Collapsible` sections, and the plot.
-    - Left panel: Measurements (collapsed by default, hint = measurement set)
-      and Display (collapsed). In edit mode only, "Define pattern" (the former
-      Pattern-tab edit content: part dropdown, + Add part, Customize, JSON
-      editor, Save, Save pattern), collapsed every time edit mode is entered.
+    - Left panel: Measurements (collapsed by default, hint = measurement set),
+      "Customize pattern" (always shown, NOT tailor-only; the
+      `part_specific_user_definable_variables` of all loaded parts, one entry
+      per name, `customVars`; a change updates every part defining it) and
+      Display (tailor only).
+    - In pattern edit mode only, "Define pattern" (opened when edit mode is
+      entered): one row per loaded part with "✎ Edit" / "✓ Done" and ✕
+      (remove), then "+ Add part", the edit count and Save pattern. The edited
+      part's row also lists its derived pieces.
+    - **Edit-part mode** (`partEditing`; `editActive = patternEditMode &&
+      partEditing && activeLoaded`): entered with a part's Edit button
+      (`startPartEdit`), left with Done / Done editing / removing that part /
+      loading a pattern (`stopPartEdit`, which also cancels tools and the
+      selection). ALL tool gating (`can*`, Name/Pin/Delete, Del key, plot
+      drag via PatternSvg `editMode`) uses `editActive`, not
+      `patternEditMode`. Plot clicks don't change `activePartFile` in this
+      mode.
+    - The edit column shows the tools and the part's JSON editor as two tabs
+      (`partEditTab` "tools" | "json"), one visible at a time. The JSON tab
+      widens the column (`.edit-column.json`, 420 px), expands a collapsed
+      bar, is disabled while a tool is active, and holds "Save part". On
+      phones it opens as a sheet above the bottom bar. Outside edit-part mode
+      the column only shows a hint.
     - Collapse states are not persisted.
   - There is no tab strip or Pattern tab any more; `activeTab` is gone (old
     stored values are ignored). The non-edit part list with highlighting was
@@ -437,7 +577,13 @@ leaves it.
   - Line styles on the tile pages:
     - seam allowance (cutting line): solid 0.8 pt;
     - pattern lines: dashed `[4 2.5]`;
-    - aux lines: grey dash-dot;
+    - **fold lines** (line type `fold`, `DrawPath.fold`): black long
+      dash-dot `[9 2.5 1.2 2.5]`, drawn after the regular lines. They are not
+      cut, so `emitAllowance` leaves out the allowance-polygon edges lying on a
+      fold line (allowance 0, so the solid line would hide the dash-dot). The
+      cutting line is then an open run ending at the fold's corners. The
+      overview page adds a legend line when a fold exists;
+    - aux lines: grey short dash-dot `[4 1.5 0.8 1.5]`;
     - page frame: dotted (`1 J [0 2.2]`, round caps on zero-length dashes).
   - The overview map draws thin solid lines instead. The tile layout includes
     the allowance extents. The overview page has a legend line.

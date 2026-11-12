@@ -55,6 +55,8 @@ interface DrawPath {
   start: P;
   curves: [P, P, P][];
   aux: boolean;
+  /** Line specified as "fold" (printed dash-dot, not part of the cutting line). */
+  fold?: boolean;
 }
 
 const NUM_RE = /-?\d*\.?\d+(?:[eE][-+]?\d+)?/g;
@@ -83,10 +85,31 @@ function visiblePaths(pieces: PrintPiece[], opts: PrintOptions): DrawPath[] {
       const aux = pc.geometry.lineTypes[name] === "aux";
       if (aux && !opts.showAuxLines) continue;
       const p = parsePath(d);
-      if (p) out.push({ ...p, aux });
+      const fold = !aux && pc.geometry.lineSpecs?.[name]?.lineType === "fold";
+      if (p) out.push({ ...p, aux, ...(fold ? { fold } : {}) });
+    }
+    // Circles as four cubic arcs (exact to ~0.03 % of the radius).
+    for (const c of Object.values(pc.geometry.circles ?? {})) {
+      const aux = c.lineType === "aux";
+      if (aux && !opts.showAuxLines) continue;
+      out.push({ ...circleCurves(c.cx, c.cy, c.r), aux });
     }
   }
   return out;
+}
+
+/** A circle as a closed chain of four cubic Béziers (start + curves). */
+function circleCurves(cx: number, cy: number, r: number): { start: P; curves: [P, P, P][] } {
+  const k = 0.5523 * r;
+  return {
+    start: { x: cx + r, y: cy },
+    curves: [
+      [{ x: cx + r, y: cy + k }, { x: cx + k, y: cy + r }, { x: cx, y: cy + r }],
+      [{ x: cx - k, y: cy + r }, { x: cx - r, y: cy + k }, { x: cx - r, y: cy }],
+      [{ x: cx - r, y: cy - k }, { x: cx - k, y: cy - r }, { x: cx, y: cy - r }],
+      [{ x: cx + k, y: cy - r }, { x: cx + r, y: cy - k }, { x: cx + r, y: cy }],
+    ],
+  };
 }
 
 function visiblePoints(pieces: PrintPiece[], opts: PrintOptions): { name: string; p: P }[] {
@@ -330,6 +353,58 @@ function writePdf(pages: string[], pageWpt: number, pageHpt: number, title: stri
 
 // ── Page drawing ──────────────────────────────────────────────────────────────
 
+/** Dense polylines (≤ 2 mm apart) along the fold lines. */
+function foldPolylines(paths: DrawPath[]): P[][] {
+  return paths.filter((p) => p.fold).map((p) => samplePaths([p]));
+}
+
+/** Distance from p to a polyline. */
+function distToPolyline(p: P, poly: P[]): number {
+  let best = Infinity;
+  for (let i = 0; i + 1 < poly.length; i++) {
+    const a = poly[i], b = poly[i + 1];
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const L2 = vx * vx + vy * vy;
+    const t = L2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / L2)) : 0;
+    best = Math.min(best, Math.hypot(p.x - (a.x + t * vx), p.y - (a.y + t * vy)));
+  }
+  return best;
+}
+
+/** Stroke a closed allowance polygon. Edges whose endpoints and midpoint all
+ *  lie on a fold line (`onFold`) are skipped, splitting it into open runs. */
+function emitAllowance(c: Content, poly: P[], map: (p: P) => P, onFold: ((p: P) => boolean) | null) {
+  const n = poly.length;
+  const skip = onFold
+    ? poly.map((p, i) => {
+        const q = poly[(i + 1) % n];
+        return onFold(p) && onFold(q) && onFold({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+      })
+    : [];
+  const first = skip.indexOf(true);
+  if (first < 0) {
+    poly.forEach((p, i) => {
+      const q = map(p);
+      c.push(`${f(q.x)} ${f(q.y)} ${i === 0 ? "m" : "l"}`);
+    });
+    c.push("h S");
+    return;
+  }
+  // Walk the edges starting right after a skipped one, so no run wraps around.
+  let open = false;
+  for (let k = 0; k < n; k++) {
+    const e = (first + 1 + k) % n;
+    if (skip[e]) {
+      if (open) { c.push("S"); open = false; }
+      continue;
+    }
+    const a = map(poly[e]), b = map(poly[(e + 1) % n]);
+    if (!open) { c.push(`${f(a.x)} ${f(a.y)} m`); open = true; }
+    c.push(`${f(b.x)} ${f(b.y)} l`);
+  }
+  if (open) c.push("S");
+}
+
 /** Emit the pattern's paths/points/labels through a coordinate mapping. */
 function drawPattern(
   c: Content,
@@ -343,23 +418,25 @@ function drawPattern(
 ) {
   c.push("1 J 1 j"); // round caps/joins
 
-  // Seam allowance = the cutting line: solid.
+  // Seam allowance = the cutting line: solid. Edges lying on a fold line are
+  // left out — a fold is not cut (its allowance is 0, so the solid line would
+  // otherwise hide the dash-dot fold line drawn below).
   c.push(`0 G ${f(detailed ? 0.8 : 0.4)} w [] 0 d`);
-  for (const poly of allowances) {
-    poly.forEach((p, i) => {
-      const q = map(p);
-      c.push(`${f(q.x)} ${f(q.y)} ${i === 0 ? "m" : "l"}`);
-    });
-    c.push("h S");
-  }
+  const foldLines = foldPolylines(paths);
+  const onFold = (p: P) => foldLines.some((pl) => distToPolyline(p, pl) <= 0.005);
+  for (const poly of allowances) emitAllowance(c, poly, map, foldLines.length ? onFold : null);
 
-  // Pattern (seam) lines: dashed on the tile pages; aux lines dash-dot grey.
-  // The small overview map draws them as thin solid grey lines instead.
-  for (const aux of [true, false]) {
-    if (aux) c.push(`0.6 G ${f(detailed ? 0.4 : 0.25)} w ${detailed ? "[4 1.5 0.8 1.5] 0 d" : "[] 0 d"}`);
+  // Pattern (seam) lines: dashed on the tile pages; fold lines long-dash-dot
+  // (black); aux lines short dash-dot (grey). The small overview map draws
+  // them all as thin solid grey lines instead.
+  const kindOf = (dp: DrawPath) => (dp.aux ? "aux" : dp.fold ? "fold" : "regular");
+  for (const kind of ["aux", "regular", "fold"] as const) {
+    if (!paths.some((dp) => kindOf(dp) === kind)) continue; // nothing of this kind
+    if (kind === "aux") c.push(`0.6 G ${f(detailed ? 0.4 : 0.25)} w ${detailed ? "[4 1.5 0.8 1.5] 0 d" : "[] 0 d"}`);
+    else if (kind === "fold") c.push(detailed ? "0 G 0.6 w [9 2.5 1.2 2.5] 0 d" : "0.45 G 0.3 w [] 0 d");
     else c.push(detailed ? "0 G 0.6 w [4 2.5] 0 d" : "0.45 G 0.3 w [] 0 d");
     for (const dp of paths) {
-      if (dp.aux !== aux) continue;
+      if (kindOf(dp) !== kind) continue;
       const s = map(dp.start);
       c.push(`${f(s.x)} ${f(s.y)} m`);
       for (const [b, cc, d] of dp.curves) {
@@ -446,6 +523,7 @@ export function buildPatternPdf(
       opts.showAllowance
         ? `Solid line = cutting line (incl. seam allowance), dashed line = seam line.`
         : `Dashed line = seam line (no seam allowance included - add it when cutting).`,
+      ...(paths.some((p) => p.fold) ? [`Long dash-dot line = fold line (place on the fold, do not cut).`] : []),
     ];
     for (const line of facts) {
       for (const part of wrapText(line, 9, W - 2 * m)) { c.text(m, y, 9, part); y -= 12; }

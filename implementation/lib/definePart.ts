@@ -141,7 +141,14 @@ function shift(g: GeometryResult, dx: number, dy: number): GeometryResult {
     paths[k] = d.replace(NUM, (t) => String(parseFloat(t) + (i++ % 2 === 0 ? dx : dy)));
   }
   const b = g.bbox;
-  return { ...g, points, paths, bbox: b ? { minX: b.minX + dx, minY: b.minY + dy, maxX: b.maxX + dx, maxY: b.maxY + dy } : null };
+  const circles = g.circles
+    ? Object.fromEntries(Object.entries(g.circles).map(([k, c]) => [k, { ...c, cx: c.cx + dx, cy: c.cy + dy }]))
+    : undefined;
+  return {
+    ...g, points, paths,
+    bbox: b ? { minX: b.minX + dx, minY: b.minY + dy, maxX: b.maxX + dx, maxY: b.maxY + dy } : null,
+    ...(circles ? { circles } : {}),
+  };
 }
 
 /**

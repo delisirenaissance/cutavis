@@ -21,10 +21,10 @@ export interface BodyformOption {
 export const BODYFORM_VARIABLES: Record<string, BodyformOption[]> = {
   waistform: [
     { text: "none of the others", value: 1 },
-    { text: "a bit flatter buttocks, PLUS a bit stronger hips", value: 0.5 },
-    { text: "very flat buttocks, PLUS very strong hips", value: 0 },
-    { text: "a bit stronger buttocks, PLUS a bit flater hips", value: 1.5 },
-    { text: "very strong buttocks, PLUS quite flat hips", value: 2 },
+    { text: "a bit: hips more curvy than butt", value: 0.5 },
+    { text: "clearly: hips more curvy than butt", value: 0 },
+    { text: "a bit: butt more pronounced than hip curve", value: 1.5 },
+    { text: "clearly: butt more pronounced than hip curve", value: 2 },
   ],
   cupsize: [
     { text: "C", value: 0.8 },

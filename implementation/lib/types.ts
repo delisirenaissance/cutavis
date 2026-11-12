@@ -41,6 +41,18 @@ export interface LineDef {
   mergeLineAliasInOtherPartalPattern?: string;
 }
 
+/** A circle around a named point. `radius` is a formula (like point
+ *  coordinates); `condition` gates it like a line's condition. Circles are
+ *  markings: they are drawn and printed but are not part of the outline (no
+ *  seam allowance). */
+export interface CircleDef {
+  /** "seam" | "hem" | "aux" — styled like lines (aux only when aux lines show). */
+  lineType?: string;
+  centerPoint: string;
+  radius: string;
+  condition?: string;
+}
+
 export interface PartDef {
   /** User-editable numeric constants specific to this part (e.g. ease/seam
    *  allowances). Exposed in the "Customize" UI and referenceable from
@@ -53,6 +65,8 @@ export interface PartDef {
   local_variables?: Record<string, string>;
   points: Record<string, PointDef>;
   lines: Record<string, LineDef>;
+  /** Optional circles (e.g. a button-hole eye or a button-size marking). */
+  circles?: Record<string, CircleDef>;
 }
 
 export type Measurements = Record<string, number>;

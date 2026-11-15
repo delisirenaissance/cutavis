@@ -107,12 +107,10 @@ export function PatternShop({ patterns, titles = {}, currentPattern, currentDirt
         {tailorSwitch && <div className="shop-topbar">{tailorSwitch}</div>}
         <img width="15%" src="/imgs/logo.svg" alt="Logo"></img>
         <h1>delisi</h1>
-        <h2>patterns made to measure</h2>
-        <p>1. select a pattern.</p>
-        <p>2. select your (saved) measurements</p>
-        <p>3. print your pattern pdf - for free</p>
+        <p className="subtitle">patterns made to measure</p>
       </header>
       <section className="shop-grid-wrap">
+        <p className="instructions">select a pattern → select your (saved) measurements → print  😎</p>
         {status && <p className="reload-err">{status}</p>}
         {patterns.length === 0 ? (
           <p className="subtitle">No patterns found in patterndefinitions/.</p>

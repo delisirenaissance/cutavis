@@ -11,7 +11,7 @@
 // references are detected and reported as errors.
 
 import { Parser } from "expr-eval";
-import type { LineSpec, Measurements, PartDef } from "./types";
+import type { CircleArcDef, LineDef, LineSpec, Measurements, PartDef } from "./types";
 import { excelToExpr } from "./calculatedVariables";
 
 const detectParser = new Parser();
@@ -27,6 +27,154 @@ function excelFormula<T>(expr: T): T {
   return typeof expr === "string" && EXCEL_MARKER_RE.test(expr) ? (excelToExpr(expr) as T) : expr;
 }
 
+/**
+ * Drop malformed line definitions (they used to crash the evaluation) and
+ * report them. A line must be an object whose `linePointReferences` is a list
+ * of exactly 4 point names (numbers are read as names); its display
+ * conditions must be a formula string, boolean or number.
+ */
+function sanitizeLines(part: PartDef): { part: PartDef; errors: Record<string, string> } {
+  const errors: Record<string, string> = {};
+  const lines: PartDef["lines"] = {};
+  const raw: unknown = part.lines;
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    if (raw != null) errors["lines"] = `"lines" must be an object of named lines, got ${JSON.stringify(raw)}`;
+    return { part: { ...part, lines }, errors };
+  }
+  for (const [name, l] of Object.entries(raw as Record<string, unknown>)) {
+    const shown = JSON.stringify(l);
+    const expected = `expected { "linePointReferences": [start, c1, c2, end], "lineType": … } or { "circleDefinition": {…}, "lineType": … }`;
+    if (l == null || typeof l !== "object" || Array.isArray(l)) {
+      errors[`line ${name}`] = `Malformed line definition ${shown} — ${expected}`;
+      continue;
+    }
+    const def = l as LineDef;
+    const badCond = LINE_CONDITION_KEYS.find((k) => def[k] != null && !["string", "boolean", "number"].includes(typeof def[k]));
+    if (badCond) {
+      errors[`line ${name} → ${badCond}`] = `${badCond} must be a formula string, true/false or a number, got ${JSON.stringify(def[badCond])}`;
+      continue;
+    }
+    // Circle-arc line: "circleDefinition" instead of linePointReferences.
+    const circleRaw = findKeyCI(def as unknown as Record<string, unknown>, ["circleDefinition"]);
+    if (circleRaw !== undefined) {
+      const arc = parseCircleArcDef(circleRaw);
+      if (typeof arc === "string") {
+        errors[`line ${name} → circleDefinition`] = `${arc} (got ${JSON.stringify(circleRaw)})`;
+        continue;
+      }
+      const { linePointReferences: _ignored, ...rest } = def;
+      lines[name] = { ...rest, circleDefinition: arc };
+      continue;
+    }
+    const refs: unknown = def.linePointReferences;
+    if (!Array.isArray(refs) || refs.length !== 4 || refs.some((r) => typeof r !== "string" && typeof r !== "number")) {
+      errors[`line ${name}`] = `Malformed line definition ${shown} — "linePointReferences" must list exactly 4 point names (a straight line is [A, A, B, B])`;
+      continue;
+    }
+    lines[name] = { ...def, linePointReferences: refs.map(String) as LineDef["linePointReferences"] };
+  }
+  return { part: { ...part, lines }, errors };
+}
+
+/** Value of the first key of `o` matching one of `names`, case-insensitively. */
+function findKeyCI(o: Record<string, unknown>, names: string[]): unknown {
+  const want = names.map((n) => n.toLowerCase());
+  for (const [k, v] of Object.entries(o)) if (want.includes(k.toLowerCase())) return v;
+  return undefined;
+}
+
+/** Arc directions: +1 = clockwise on screen (y points down), -1 = counter-clockwise. */
+const ARC_DIRECTIONS: Record<string, 1 | -1> = {
+  right: 1, clockwise: 1, cw: 1,
+  left: -1, counterclockwise: -1, anticlockwise: -1, ccw: -1,
+};
+
+/** Validate a line's circleDefinition, accepting the spelling variants
+ *  (case-insensitive keys, lenghtAlongCircle, cicleDirection). Returns the
+ *  canonical form, or an error message. */
+function parseCircleArcDef(raw: unknown): CircleArcDef | string {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    return "circleDefinition must be an object { centerPoint, radiusDefPoint, circleDirection, lengthAlongCircle }";
+  }
+  const o = raw as Record<string, unknown>;
+  const asName = (v: unknown) => (typeof v === "string" || typeof v === "number" ? String(v) : undefined);
+  const centerPoint = asName(findKeyCI(o, ["centerPoint", "centrePoint", "center"]));
+  const radiusDefPoint = asName(findKeyCI(o, ["radiusDefPoint", "radiusPoint", "startPoint"]));
+  const dir = findKeyCI(o, ["circleDirection", "cicleDirection", "direction"]);
+  const len = findKeyCI(o, ["lengthAlongCircle", "lenghtAlongCircle", "length"]);
+  if (!centerPoint) return "circleDefinition needs \"centerPoint\" (a point name)";
+  if (!radiusDefPoint) return "circleDefinition needs \"radiusDefPoint\" (a point name)";
+  if (typeof dir !== "string" || !(dir.trim().toLowerCase() in ARC_DIRECTIONS)) {
+    return `circleDirection must be one of ${Object.keys(ARC_DIRECTIONS).join(", ")}`;
+  }
+  if (typeof len !== "string" && typeof len !== "number") {
+    return "circleDefinition needs \"lengthAlongCircle\" (cm along the circle, number or formula)";
+  }
+  return { centerPoint, radiusDefPoint, circleDirection: dir.trim().toLowerCase(), lengthAlongCircle: String(len) };
+}
+
+/** Cubic Bézier segments (each ≤ 30°, radial error < 4e-7·r) approximating the arc around `c` from
+ *  `start` over arc length `len` in direction `dir` (+1 = clockwise on screen). */
+function arcBeziers(c: Vec2, start: Vec2, len: number, dir: 1 | -1): Bezier[] {
+  const r = Math.hypot(start.x - c.x, start.y - c.y);
+  const total = len / r; // radians
+  const n = Math.max(1, Math.ceil(total / (Math.PI / 6) - 1e-9));
+  const phi = total / n;
+  const k = (4 / 3) * Math.tan(phi / 4) * r;
+  const at = (th: number): Vec2 => ({ x: c.x + r * Math.cos(th), y: c.y + r * Math.sin(th) });
+  const tan = (th: number): Vec2 => ({ x: -Math.sin(th) * dir, y: Math.cos(th) * dir });
+  const th0 = Math.atan2(start.y - c.y, start.x - c.x);
+  const out: Bezier[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = th0 + dir * phi * i;
+    const b = th0 + dir * phi * (i + 1);
+    const p0 = i === 0 ? { x: start.x, y: start.y } : at(a);
+    const p3 = at(b);
+    const t0 = tan(a);
+    const t1 = tan(b);
+    out.push([
+      p0,
+      { x: p0.x + k * t0.x, y: p0.y + k * t0.y },
+      { x: p3.x - k * t1.x, y: p3.y - k * t1.y },
+      p3,
+    ] as unknown as Bezier);
+  }
+  return out;
+}
+
+/** A circle arc resolved to geometry: the drawn segments plus the whole circle
+ *  (for prolonging the arc along its circle). */
+interface ResolvedArc { segs: Bezier[]; circle: Bezier[]; note?: string }
+
+function resolveArc(
+  a: CircleArcDef,
+  points: Record<string, ResolvedPoint>,
+  evalLength: (expr: string) => number
+): ResolvedArc | { error: string; key?: string } {
+  const missing = [a.centerPoint, a.radiusDefPoint].filter((r) => !(r in points));
+  if (missing.length) return { error: `Unknown / unresolved point(s): ${[...new Set(missing)].join(", ")}` };
+  const c = points[a.centerPoint];
+  const st = points[a.radiusDefPoint];
+  let len: number;
+  try {
+    len = evalLength(a.lengthAlongCircle);
+  } catch (err) {
+    return { error: `Cannot evaluate "${a.lengthAlongCircle}": ${(err as Error).message}`, key: "lengthAlongCircle" };
+  }
+  const r = Math.hypot(st.x - c.x, st.y - c.y);
+  if (r < 1e-9) return { error: `radiusDefPoint "${a.radiusDefPoint}" lies on centerPoint "${a.centerPoint}" (radius 0)` };
+  let dir = ARC_DIRECTIONS[a.circleDirection];
+  if (len < 0) { len = -len; dir = dir === 1 ? -1 : 1; } // negative = other way round
+  if (len === 0) return { error: "lengthAlongCircle is 0; nothing to draw" };
+  const full = 2 * Math.PI * r;
+  let note: string | undefined;
+  if (len > full + 1e-9) {
+    note = `lengthAlongCircle ${len.toFixed(2)} exceeds the full circle (${full.toFixed(2)}); drawing the full circle`;
+    len = full;
+  }
+  return { segs: arcBeziers(c, st, len, dir), circle: arcBeziers(c, st, full, dir), note };
+}
+
 /** A copy of the part with every Excel-style formula translated to expr-eval. */
 function normalizeFormulas(part: PartDef): PartDef {
   const mapValues = <V>(o: Record<string, V>, f: (v: V) => V): Record<string, V> =>
@@ -35,7 +183,14 @@ function normalizeFormulas(part: PartDef): PartDef {
     ...part,
     local_variables: part.local_variables && mapValues(part.local_variables, excelFormula),
     points: mapValues(part.points, (pd) => ({ ...pd, x: excelFormula(pd.x), y: excelFormula(pd.y) })),
-    lines: mapValues(part.lines, (l) => ({ ...l, condition: excelFormula(l.condition) })),
+    lines: mapValues(part.lines, (l) => ({
+      ...l,
+      condition: excelFormula(l.condition),
+      conditionForLineToBeDisplayed: excelFormula(l.conditionForLineToBeDisplayed),
+      ...(l.circleDefinition
+        ? { circleDefinition: { ...l.circleDefinition, lengthAlongCircle: excelFormula(l.circleDefinition.lengthAlongCircle) } }
+        : {}),
+    })),
     circles:
       part.circles &&
       mapValues(part.circles, (c) => ({ ...c, radius: excelFormula(c.radius), condition: excelFormula(c.condition) })),
@@ -149,7 +304,11 @@ function resolveLineName(arg: string, part: PartDef): string | null {
 function linePointDeps(lineName: string, part: PartDef): string[] {
   const line = part.lines[lineName];
   if (!line) return [];
-  return [...new Set(line.linePointReferences)];
+  if (line.circleDefinition) {
+    const a = line.circleDefinition;
+    return [...new Set([a.centerPoint, a.radiusDefPoint, ...pointDepsOf(a.lengthAlongCircle)])];
+  }
+  return [...new Set(line.linePointReferences ?? [])];
 }
 
 // ── Cubic Bézier intersection ──────────────────────────────────────────────
@@ -319,24 +478,6 @@ export function intersectBeziers(a: Bezier, b: Bezier, tol = 1e-6): Vec2[] {
 }
 
 /**
- * True when a line's four control points are (near-)collinear, i.e. the Bézier
- * traces a straight segment — including the canonical [A,A,B,B] form. Returns
- * false for a zero-length line, which has no usable direction.
- */
-function isStraightBezier(b: Bezier, tol = 1e-6): boolean {
-  const dx = b[3].x - b[0].x;
-  const dy = b[3].y - b[0].y;
-  const len = Math.hypot(dx, dy);
-  if (len === 0) return false;
-  // Perpendicular distance of each interior control point from the P0→P3 chord.
-  for (const p of [b[1], b[2]]) {
-    const cross = Math.abs((p.x - b[0].x) * dy - (p.y - b[0].y) * dx);
-    if (cross / len > tol) return false;
-  }
-  return true;
-}
-
-/**
  * Intersect two infinite lines, each given by two distinct points on it.
  * Returns null when the lines are parallel (or coincident).
  */
@@ -349,6 +490,164 @@ function infiniteLineIntersection(a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2): Vec2 
   if (Math.abs(denom) < 1e-12) return null;
   const t = ((b0.x - a0.x) * sy - (b0.y - a0.y) * sx) / denom;
   return { x: a0.x + t * rx, y: a0.y + t * ry };
+}
+
+// ── Intersection of PROLONGED lines (intersectLines fallback) ────────────────
+// When two lines don't cross, each is extended straight along the tangent at
+// ONE of its ends: the end closer to the other line. The tangent runs control
+// point → end (C2→P3 / C1→P0); if that control point coincides with the end
+// (straight [A,A,B,B]), the next one is used, then the other end — the same
+// rule as prolongLineToReachLength.
+
+interface EndRay { tip: Vec2; dir: Vec2 }
+
+function endTangentRay(b: Bezier, atEnd: boolean): EndRay | null {
+  const tip = atEnd ? b[3] : b[0];
+  const others = atEnd ? [b[2], b[1], b[0]] : [b[1], b[2], b[3]];
+  const scale = Math.max(1, ...b.map((p) => Math.hypot(p.x - b[0].x, p.y - b[0].y)));
+  const from = others.find((p) => Math.hypot(tip.x - p.x, tip.y - p.y) > 1e-9 * scale);
+  if (!from) return null;
+  const dx = tip.x - from.x;
+  const dy = tip.y - from.y;
+  const len = Math.hypot(dx, dy);
+  return { tip, dir: { x: dx / len, y: dy / len } };
+}
+
+/** Approximate distance from p to a Bézier (polyline of 64 chords). */
+function distToBezier(p: Vec2, b: Bezier): number {
+  let best = Infinity;
+  let prev = b[0];
+  for (let i = 1; i <= 64; i++) {
+    const cur = bezierAt(b, i / 64);
+    const vx = cur.x - prev.x;
+    const vy = cur.y - prev.y;
+    const l2 = vx * vx + vy * vy;
+    const t = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - prev.x) * vx + (p.y - prev.y) * vy) / l2));
+    best = Math.min(best, Math.hypot(p.x - (prev.x + t * vx), p.y - (prev.y + t * vy)));
+    prev = cur;
+  }
+  return best;
+}
+
+/** The tangent ray at the end of `b` that is closer to `other`. */
+function closerEndRay(b: Bezier, other: Bezier): EndRay | null {
+  const atEnd = distToBezier(b[3], other) <= distToBezier(b[0], other);
+  return endTangentRay(b, atEnd);
+}
+
+/**
+ * Intersection of two non-crossing lines, each prolonged along its closer-end
+ * tangent. Candidates: ray 1 hitting curve 2, curve 1 hitting ray 2, and ray 1
+ * meeting ray 2 (both forward). The one needing the least total extension
+ * wins. If no forward hit exists, the two tangent lines are intersected as
+ * infinite lines (for two straight lines this is the old behaviour, and the
+ * result is the same point in every case). Null = tangents parallel.
+ */
+function intersectProlonged(b1: Bezier, b2: Bezier): Vec2 | null {
+  const r1 = closerEndRay(b1, b2);
+  const r2 = closerEndRay(b2, b1);
+  if (!r1 || !r2) return null;
+
+  // A ray as a long straight Bézier, far beyond both lines.
+  const all = [...b1, ...b2];
+  const xs = all.map((p) => p.x);
+  const ys = all.map((p) => p.y);
+  const far = 100 * (Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) + 1);
+  const rayBez = (r: EndRay): Bezier => {
+    const end = { x: r.tip.x + r.dir.x * far, y: r.tip.y + r.dir.y * far };
+    return [r.tip, r.tip, end, end] as unknown as Bezier;
+  };
+
+  let best: { p: Vec2; cost: number } | null = null;
+  const consider = (p: Vec2, cost: number) => {
+    if (!best || cost < best.cost) best = { p, cost };
+  };
+  for (const [ray, curve] of [[r1, b2], [r2, b1]] as const) {
+    for (const hit of intersectBeziers(rayBez(ray), curve)) {
+      consider(hit, Math.hypot(hit.x - ray.tip.x, hit.y - ray.tip.y));
+    }
+  }
+  // Ray × ray (forward on both).
+  const denom = r1.dir.x * r2.dir.y - r1.dir.y * r2.dir.x;
+  if (Math.abs(denom) > 1e-12) {
+    const wx = r2.tip.x - r1.tip.x;
+    const wy = r2.tip.y - r1.tip.y;
+    const s = (wx * r2.dir.y - wy * r2.dir.x) / denom;
+    const u = (wx * r1.dir.y - wy * r1.dir.x) / denom;
+    if (s >= -1e-9 && u >= -1e-9) {
+      consider({ x: r1.tip.x + s * r1.dir.x, y: r1.tip.y + s * r1.dir.y }, s + u);
+    }
+  }
+  if (best) return (best as { p: Vec2 }).p;
+
+  return infiniteLineIntersection(
+    r1.tip, { x: r1.tip.x + r1.dir.x, y: r1.tip.y + r1.dir.y },
+    r2.tip, { x: r2.tip.x + r2.dir.x, y: r2.tip.y + r2.dir.y }
+  );
+}
+
+// ── Lines as segment lists (Bézier line = 1 segment, circle arc = several) ──
+
+interface LineShape {
+  segs: Bezier[];
+  /** Circle arcs only: the whole circle, the arc's prolongation. */
+  circle?: Bezier[];
+}
+
+function distToBeziers(p: Vec2, bs: Bezier[]): number {
+  return Math.min(...bs.map((b) => distToBezier(p, b)));
+}
+
+/** All crossings of two segment lists, in order along the first line, with
+ *  duplicates at shared segment joints removed. */
+function crossSegs(a: Bezier[], b: Bezier[]): Vec2[] {
+  const out: Vec2[] = [];
+  for (const sa of a) {
+    for (const sb of b) {
+      for (const p of intersectBeziers(sa, sb)) {
+        if (!out.some((q) => Math.hypot(p.x - q.x, p.y - q.y) < 1e-6)) out.push(p);
+      }
+    }
+  }
+  return out;
+}
+
+function crossLineShapes(a: LineShape, b: LineShape): Vec2[] {
+  return crossSegs(a.segs, b.segs);
+}
+
+/**
+ * Intersection when the drawn lines don't cross.
+ * - Two Bézier lines: `intersectProlonged` (closer-end tangents).
+ * - With a circle arc: the arc is prolonged along its whole circle; a Bézier
+ *   line is prolonged along the tangent at its end closer to the arc. Of all
+ *   crossings of these prolongations, the one closest to the two drawn lines
+ *   wins (sum of distances).
+ */
+function intersectProlongedShapes(a: LineShape, b: LineShape): Vec2 | null {
+  if (!a.circle && !b.circle) return intersectProlonged(a.segs[0], b.segs[0]);
+  const all = [...a.segs, ...b.segs, ...(a.circle ?? []), ...(b.circle ?? [])].flat();
+  const xs = all.map((p) => p.x);
+  const ys = all.map((p) => p.y);
+  const far = 100 * (Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) + 1);
+  const extended = (sh: LineShape, other: LineShape): Bezier[] => {
+    if (sh.circle) return sh.circle;
+    const bz = sh.segs[0];
+    const target = other.circle ?? other.segs;
+    const atEnd = distToBeziers(bz[3], target) <= distToBeziers(bz[0], target);
+    const ray = endTangentRay(bz, atEnd);
+    if (!ray) return [bz];
+    const end = { x: ray.tip.x + ray.dir.x * far, y: ray.tip.y + ray.dir.y * far };
+    return [bz, [ray.tip, ray.tip, end, end] as unknown as Bezier];
+  };
+  const hits = crossSegs(extended(a, b), extended(b, a));
+  let best: Vec2 | null = null;
+  let bestCost = Infinity;
+  for (const h of hits) {
+    const cost = distToBeziers(h, a.segs) + distToBeziers(h, b.segs);
+    if (cost < bestCost) { bestCost = cost; best = h; }
+  }
+  return best;
 }
 
 // ── Arc-length traversal of a cubic Bézier ───────────────────────────────────
@@ -421,6 +720,22 @@ function pointDepsOf(formula: string): string[] {
   return names;
 }
 
+/** Keys of a line that gate its display; all present ones must be true. */
+const LINE_CONDITION_KEYS = ["condition", "conditionForLineToBeDisplayed"] as const;
+
+/** A line's display conditions as formulas (absent / empty ones skipped).
+ *  A JSON boolean or number is accepted too (true/false, non-zero = true). */
+function lineConditions(line: LineDef): { key: string; expr: string }[] {
+  const out: { key: string; expr: string }[] = [];
+  for (const key of LINE_CONDITION_KEYS) {
+    const v: unknown = line[key];
+    if (typeof v === "boolean") out.push({ key, expr: v ? "1" : "0" });
+    else if (typeof v === "number") out.push({ key, expr: String(v) });
+    else if (typeof v === "string" && v.trim() !== "") out.push({ key, expr: v });
+  }
+  return out;
+}
+
 function inlinePointRefs(
   formula: string,
   resolved: Record<string, ResolvedPoint>
@@ -461,7 +776,7 @@ function topoSort(
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export function collectVariables(part: PartDef): string[] {
-  part = normalizeFormulas(part);
+  part = normalizeFormulas(sanitizeLines(part).part);
   const vars = new Set<string>();
   // Local variable names are NOT measurement inputs — exclude them from results
   // but DO scan their formulas so that any measurements they reference are included.
@@ -508,14 +823,16 @@ export function collectVariables(part: PartDef): string[] {
 
   // Line visibility conditions can reference variables too.
   for (const line of Object.values(part.lines)) {
-    if (typeof line.condition !== "string") continue;
-    const stripped = line.condition.replace(CONDITION_IF_RE, "").replace(POINT_REF_RE, "0");
-    try {
-      for (const v of detectParser.parse(stripped).variables()) {
-        if (!localNames.has(v)) vars.add(v);
+    const arcExprs = line.circleDefinition ? [{ expr: line.circleDefinition.lengthAlongCircle }] : [];
+    for (const { expr } of [...lineConditions(line), ...arcExprs]) {
+      const stripped = expr.replace(CONDITION_IF_RE, "").replace(POINT_REF_RE, "0");
+      try {
+        for (const v of detectParser.parse(stripped).variables()) {
+          if (!localNames.has(v)) vars.add(v);
+        }
+      } catch {
+        // Ignore parse errors; they surface during evaluation.
       }
-    } catch {
-      // Ignore parse errors; they surface during evaluation.
     }
   }
   return [...vars].sort();
@@ -558,11 +875,12 @@ function evalCondition(
 }
 
 export function evaluatePart(part: PartDef, measurements: Measurements): GeometryResult {
-  part = normalizeFormulas(part);
+  const sane = sanitizeLines(part);
+  part = normalizeFormulas(sane.part);
   const points: Record<string, ResolvedPoint> = {};
   const paths: Record<string, string> = {};
   const lineTypes: Record<string, string | undefined> = {};
-  const errors: Record<string, string> = {};
+  const errors: Record<string, string> = { ...sane.errors };
 
   // Build a parser that won't shadow any user-defined name (measurements + locals)
   const localVarNames = Object.keys(part.local_variables ?? {});
@@ -590,7 +908,7 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
     try {
       sortedLocalNames = topoSort(localVarNames, localDepsOf);
     } catch (err) {
-      errors["__local_cycle__"] = (err as Error).message;
+      errors["local variables (cycle)"] = (err as Error).message;
       sortedLocalNames = localVarNames;
     }
 
@@ -603,13 +921,15 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         localScope[name] = val;
         runningScope[name] = val;
       } catch (err) {
-        errors[`local.${name}`] = (err as Error).message;
+        errors[`local variable ${name}`] = `Cannot evaluate "${part.local_variables![name]}": ${(err as Error).message}`;
       }
     }
   }
 
   // Full scope available to point formulas: measurements + resolved locals
   const fullScope: Measurements = { ...measurements, ...localScope };
+  // Arc lengths may use variables and point(NAME->x|y) refs resolved so far.
+  const evalLength = (expr: string) => evalFormula(parser, inlinePointRefs(expr, points), fullScope);
 
   const pointNames = Object.keys(part.points);
 
@@ -644,7 +964,7 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
   try {
     sortedNames = topoSort(pointNames, depsOf);
   } catch (err) {
-    errors["__cycle__"] = (err as Error).message;
+    errors["points (cycle)"] = (err as Error).message;
     sortedNames = pointNames;
   }
 
@@ -656,51 +976,53 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
       // ── Geometric function ────────────────────────────────────────────────
       const gf = parseGeoFunc(xyExpr);
       if (!gf) {
-        errors[name] = `Cannot parse geometric expression: ${xyExpr}`;
+        errors[`point ${name}`] = `Cannot parse geometric expression: ${xyExpr}`;
         continue;
       }
       if (gf.func === "intersectLines") {
         if (gf.args.length !== 2) {
-          errors[name] = `intersectLines requires 2 line arguments, got ${gf.args.length}`;
+          errors[`point ${name}`] = `intersectLines requires 2 line arguments, got ${gf.args.length}`;
           continue;
         }
         const [l1name, l2name] = gf.args;
         const l1 = part.lines[l1name];
         const l2 = part.lines[l2name];
-        if (!l1) { errors[name] = `Unknown line "${l1name}"`; continue; }
-        if (!l2) { errors[name] = `Unknown line "${l2name}"`; continue; }
-        // Build each line as a full cubic Bézier from its four control points,
-        // so curved segments intersect correctly (not just their P0→P3 chords).
-        const toBezier = (refs: readonly string[]): Bezier | string => {
-          const pts = refs.map((r) => points[r]);
+        if (!l1) { errors[`point ${name}`] = `Unknown line "${l1name}"`; continue; }
+        if (!l2) { errors[`point ${name}`] = `Unknown line "${l2name}"`; continue; }
+        // Each line as its cubic segment(s): one for a Bézier line (all four
+        // control points, so curves intersect correctly, not their chords),
+        // several for a circle arc (plus its whole circle for prolonging).
+        const shapeOf = (lname: string, l: LineDef): LineShape | string => {
+          if (l.circleDefinition) {
+            const arc = resolveArc(l.circleDefinition, points, evalLength);
+            return "error" in arc ? `circle arc "${lname}": ${arc.error}` : { segs: arc.segs, circle: arc.circle };
+          }
+          const refs = l.linePointReferences!;
           const missing = refs.filter((r) => !points[r]);
-          if (missing.length) return [...new Set(missing)].join(", ");
-          return pts.map((p) => ({ x: p.x, y: p.y })) as unknown as Bezier;
+          if (missing.length) return `Unresolved point(s) for line "${lname}": ${[...new Set(missing)].join(", ")}`;
+          return { segs: [refs.map((r) => ({ x: points[r].x, y: points[r].y })) as unknown as Bezier] };
         };
-        const bez1 = toBezier(l1.linePointReferences);
-        if (typeof bez1 === "string") { errors[name] = `Unresolved point(s) for line "${l1name}": ${bez1}`; continue; }
-        const bez2 = toBezier(l2.linePointReferences);
-        if (typeof bez2 === "string") { errors[name] = `Unresolved point(s) for line "${l2name}": ${bez2}`; continue; }
+        const sh1 = shapeOf(l1name, l1);
+        if (typeof sh1 === "string") { errors[`point ${name}`] = sh1; continue; }
+        const sh2 = shapeOf(l2name, l2);
+        if (typeof sh2 === "string") { errors[`point ${name}`] = sh2; continue; }
 
-        const crossings = intersectBeziers(bez1, bez2);
+        const crossings = crossLineShapes(sh1, sh2);
         if (crossings.length === 0) {
-          // The bounded segments don't cross. When both lines are straight we
-          // extend them to infinite lines and intersect those instead, so an
-          // intersection that lies beyond the drawn segments is still found.
-          if (isStraightBezier(bez1) && isStraightBezier(bez2)) {
-            const hit = infiniteLineIntersection(bez1[0], bez1[3], bez2[0], bez2[3]);
-            if (hit) {
-              points[name] = { x: hit.x, y: hit.y, pointType: pd.pointType, position: pd.position };
-            } else {
-              errors[name] = `Lines "${l1name}" and "${l2name}" are parallel and do not intersect`;
-            }
+          // The drawn lines don't cross: an arc is prolonged along its circle,
+          // a Bézier line along the tangent at its end closer to the other line
+          // (straight lines → their infinite extension, as before).
+          const hit = intersectProlongedShapes(sh1, sh2);
+          if (hit) {
+            points[name] = { x: hit.x, y: hit.y, pointType: pd.pointType, position: pd.position };
           } else {
-            errors[name] = `Lines "${l1name}" and "${l2name}" do not intersect`;
+            errors[`point ${name}`] =
+              `Lines "${l1name}" and "${l2name}" do not intersect, not even prolonged (parallel end tangents, zero length, or the prolonged line misses the circle)`;
           }
         } else {
           // A point definition yields a single location; take the first crossing.
           if (crossings.length > 1) {
-            errors[`${name}.note`] =
+            errors[`point ${name} (note)`] =
               `Lines "${l1name}" and "${l2name}" cross ${crossings.length} times; using the first.`;
           }
           const { x, y } = crossings[0];
@@ -714,18 +1036,19 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         // perpendicular. Positive offsets lie 90° counter-clockwise from the
         // line's start→end direction; negative offsets lie on the other side.
         if (gf.args.length !== 3) {
-          errors[name] =
+          errors[`point ${name}`] =
             `lotPointOnLineAtDistance requires 3 arguments (line, distanceAlongLine, distanceFromLine), got ${gf.args.length}`;
           continue;
         }
         const [lineName, alongExpr, offsetExpr] = gf.args;
         const line = part.lines[lineName];
-        if (!line) { errors[name] = `Unknown line "${lineName}"`; continue; }
+        if (!line) { errors[`point ${name}`] = `Unknown line "${lineName}"`; continue; }
+        if (!line.linePointReferences) { errors[`point ${name}`] = `lotPointOnLineAtDistance does not support the circle arc "${lineName}" yet`; continue; }
 
         const refs = line.linePointReferences;
         const missing = refs.filter((r) => !points[r]);
         if (missing.length) {
-          errors[name] = `Unresolved point(s) for line "${lineName}": ${[...new Set(missing)].join(", ")}`;
+          errors[`point ${name}`] = `Unresolved point(s) for line "${lineName}": ${[...new Set(missing)].join(", ")}`;
           continue;
         }
         const bez = refs.map((r) => ({ x: points[r].x, y: points[r].y })) as unknown as Bezier;
@@ -737,29 +1060,29 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         try {
           along = evalFormula(parser, inlinePointRefs(alongExpr, points), fullScope);
         } catch (err) {
-          errors[name] = `Cannot evaluate distance-along-line "${alongExpr}": ${(err as Error).message}`;
+          errors[`point ${name}`] = `Cannot evaluate distance-along-line "${alongExpr}": ${(err as Error).message}`;
           continue;
         }
         try {
           offset = evalFormula(parser, inlinePointRefs(offsetExpr, points), fullScope);
         } catch (err) {
-          errors[name] = `Cannot evaluate distance-from-line "${offsetExpr}": ${(err as Error).message}`;
+          errors[`point ${name}`] = `Cannot evaluate distance-from-line "${offsetExpr}": ${(err as Error).message}`;
           continue;
         }
 
         const foot = pointAlongBezier(bez, along);
         if (foot.total === 0) {
-          errors[name] = `Line "${lineName}" has zero length; cannot create a perpendicular`;
+          errors[`point ${name}`] = `Line "${lineName}" has zero length; cannot create a perpendicular`;
           continue;
         }
         if (!foot.point || !foot.tangent) {
-          errors[name] =
+          errors[`point ${name}`] =
             `Distance ${along} along line "${lineName}" is outside the line (length ${foot.total.toFixed(4)})`;
           continue;
         }
         const tlen = Math.hypot(foot.tangent.x, foot.tangent.y);
         if (tlen === 0) {
-          errors[name] = `Line "${lineName}" has no direction at distance ${along}; cannot orient the perpendicular`;
+          errors[`point ${name}`] = `Line "${lineName}" has no direction at distance ${along}; cannot orient the perpendicular`;
           continue;
         }
         // Unit tangent, then rotate 90° CCW to get the perpendicular direction.
@@ -789,16 +1112,17 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         const fn = gf.func;
         const addMode = PROLONG_ADD_FUNCS.has(fn);
         if (gf.args.length < 2 || gf.args.length > 3) {
-          errors[name] = `${fn} requires 2 or 3 arguments (line, ${addMode ? "added length" : "length"}, SP|EP), got ${gf.args.length}`;
+          errors[`point ${name}`] = `${fn} requires 2 or 3 arguments (line, ${addMode ? "added length" : "length"}, SP|EP), got ${gf.args.length}`;
           continue;
         }
         const [lineArg, lengthExpr, endExpr = "EP"] = gf.args;
         const lineName = resolveLineName(lineArg, part);
-        if (!lineName) { errors[name] = `Unknown line "${lineArg}"`; continue; }
+        if (!lineName) { errors[`point ${name}`] = `Unknown line "${lineArg}"`; continue; }
         const refs = part.lines[lineName].linePointReferences;
+        if (!refs) { errors[`point ${name}`] = `${fn} does not support the circle arc "${lineName}" yet`; continue; }
         const missing = refs.filter((r) => !points[r]);
         if (missing.length) {
-          errors[name] = `Unresolved point(s) for line "${lineName}": ${[...new Set(missing)].join(", ")}`;
+          errors[`point ${name}`] = `Unresolved point(s) for line "${lineName}": ${[...new Set(missing)].join(", ")}`;
           continue;
         }
         const bez = refs.map((r) => ({ x: points[r].x, y: points[r].y })) as unknown as Bezier;
@@ -807,7 +1131,7 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         try {
           value = evalFormula(parser, inlinePointRefs(excelFormula(lengthExpr), points), fullScope);
         } catch (err) {
-          errors[name] = `Cannot evaluate ${addMode ? "added length" : "length"} "${lengthExpr}": ${(err as Error).message}`;
+          errors[`point ${name}`] = `Cannot evaluate ${addMode ? "added length" : "length"} "${lengthExpr}": ${(err as Error).message}`;
           continue;
         }
 
@@ -818,11 +1142,11 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
           const scope = { ...fullScope, SP: "SP", EP: "EP" } as unknown as Measurements;
           end = String(parser.parse(e).evaluate(scope)).trim().toUpperCase();
         } catch (err) {
-          errors[name] = `Cannot evaluate end "${endExpr}": ${(err as Error).message}`;
+          errors[`point ${name}`] = `Cannot evaluate end "${endExpr}": ${(err as Error).message}`;
           continue;
         }
         if (end !== "SP" && end !== "EP") {
-          errors[name] = `${fn}: the end must be SP or EP, got "${end}"`;
+          errors[`point ${name}`] = `${fn}: the end must be SP or EP, got "${end}"`;
           continue;
         }
 
@@ -831,12 +1155,12 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         const tip = run[3];
         const arc = pointAlongBezier(run, 0).total;
         if (arc === 0) {
-          errors[name] = `Line "${lineName}" has zero length; it has no direction to prolong`;
+          errors[`point ${name}`] = `Line "${lineName}" has zero length; it has no direction to prolong`;
           continue;
         }
         const length = addMode ? arc + value : value;
         if (length < 0) {
-          errors[name] = addMode
+          errors[`point ${name}`] = addMode
             ? `${fn}: shortening by ${-value} is more than the length of line "${lineName}" (${arc.toFixed(4)})`
             : `${fn}: the length must not be negative (got ${value})`;
           continue;
@@ -858,7 +1182,7 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
         const y = tip.y + (dy / dlen) * extra;
         points[name] = { x, y, pointType: pd.pointType, position: pd.position };
       } else {
-        errors[name] = `Unknown geometric function "f:${gf.func}"`;
+        errors[`point ${name}`] = `Unknown geometric function "f:${gf.func}"`;
       }
       continue;
     }
@@ -866,7 +1190,7 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
     // ── Formula-based point ─────────────────────────────────────────────────
     const { x: xExpr, y: yExpr, pointType, position } = pd;
     if (typeof xExpr !== "string" || typeof yExpr !== "string") {
-      errors[name] = "Malformed point definition — expected { x, y } strings or an \"x&y\" geometric function";
+      errors[`point ${name}`] = `Malformed point definition ${JSON.stringify(pd)} — expected { x, y } strings or an "x&y" geometric function`;
       continue;
     }
     let x: number | undefined;
@@ -874,12 +1198,12 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
     try {
       x = evalFormula(parser, inlinePointRefs(xExpr, points), fullScope);
     } catch (err) {
-      errors[`${name}.x`] = (err as Error).message;
+      errors[`point ${name} → x`] = `Cannot evaluate x = "${xExpr}": ${(err as Error).message}`;
     }
     try {
       y = evalFormula(parser, inlinePointRefs(yExpr, points), fullScope);
     } catch (err) {
-      errors[`${name}.y`] = (err as Error).message;
+      errors[`point ${name} → y`] = `Cannot evaluate y = "${yExpr}": ${(err as Error).message}`;
     }
     if (x !== undefined && y !== undefined) {
       points[name] = { x, y, pointType, position };
@@ -891,22 +1215,42 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
     // line is omitted entirely (no path, no point-resolution errors) — it is
     // intentionally absent. A condition that fails to evaluate is reported and
     // the line is left out, since we can't confirm it should be shown.
-    if (typeof line.condition === "string" && line.condition.trim() !== "") {
-      let visible: boolean;
+    // Both `condition` and `conditionForLineToBeDisplayed` gate it; every
+    // one that is defined must be true.
+    let visible = true;
+    let failed = false;
+    for (const { key, expr } of lineConditions(line)) {
       try {
-        visible = evalCondition(parser, line.condition, points, fullScope);
+        if (!evalCondition(parser, expr, points, fullScope)) { visible = false; break; }
       } catch (err) {
-        errors[`${name}.condition`] = (err as Error).message;
+        errors[`line ${name} → ${key}`] = `Cannot evaluate ${key} "${expr}": ${(err as Error).message}`;
+        failed = true;
+        break;
+      }
+    }
+    if (failed || !visible) continue;
+
+    if (line.circleDefinition) {
+      // Circle arc: one cubic per ≤ 30°, keyed L2, L2#2, … (like fragments).
+      const arc = resolveArc(line.circleDefinition, points, evalLength);
+      if ("error" in arc) {
+        errors[arc.key ? `line ${name} → ${arc.key}` : `line ${name}`] = arc.error;
         continue;
       }
-      if (!visible) continue;
+      if (arc.note) errors[`line ${name} (note)`] = arc.note;
+      arc.segs.forEach((b, i) => {
+        const key = i === 0 ? name : `${name}#${i + 1}`;
+        lineTypes[key] = line.lineType;
+        paths[key] = `M ${b[0].x} ${b[0].y} C ${b[1].x} ${b[1].y} ${b[2].x} ${b[2].y} ${b[3].x} ${b[3].y}`;
+      });
+      continue;
     }
 
     lineTypes[name] = line.lineType;
-    const refs = line.linePointReferences;
+    const refs = line.linePointReferences ?? [];
     const missing = refs.filter((r) => !(r in points));
     if (missing.length > 0) {
-      errors[name] = `Unknown / unresolved point(s): ${[...new Set(missing)].join(", ")}`;
+      errors[`line ${name}`] = `Unknown / unresolved point(s): ${[...new Set(missing)].join(", ")}`;
       continue;
     }
     const [p0, c1, c2, p3] = refs.map((r) => points[r]);
@@ -922,25 +1266,25 @@ export function evaluatePart(part: PartDef, measurements: Measurements): Geometr
       try {
         visible = evalCondition(parser, c.condition, points, fullScope);
       } catch (err) {
-        errors[`${name}.condition`] = (err as Error).message;
+        errors[`circle ${name} → condition`] = `Cannot evaluate condition "${c.condition}": ${(err as Error).message}`;
         continue;
       }
       if (!visible) continue;
     }
     const center = points[c.centerPoint];
     if (!center) {
-      errors[name] = `Unknown / unresolved centre point: ${c.centerPoint}`;
+      errors[`circle ${name}`] = `Unknown / unresolved centre point: ${c.centerPoint}`;
       continue;
     }
     let r: number;
     try {
       r = evalFormula(parser, inlinePointRefs(String(c.radius), points), fullScope);
     } catch (err) {
-      errors[name] = `Cannot evaluate radius "${c.radius}": ${(err as Error).message}`;
+      errors[`circle ${name}`] = `Cannot evaluate radius "${c.radius}": ${(err as Error).message}`;
       continue;
     }
     if (!Number.isFinite(r) || r <= 0) {
-      errors[name] = `Radius must be a positive number (got ${r})`;
+      errors[`circle ${name}`] = `Radius must be a positive number (got ${r})`;
       continue;
     }
     circles[name] = { cx: center.x, cy: center.y, r, lineType: c.lineType };
@@ -1005,7 +1349,8 @@ export function mergeGeometries(
     for (const [k, v] of Object.entries(g.paths)) paths[kPfx + k] = v;
     for (const [k, v] of Object.entries(g.lineTypes)) lineTypes[kPfx + k] = v;
     for (const [k, v] of Object.entries(g.localValues)) localValues[ePfx + k] = v;
-    for (const [k, v] of Object.entries(g.errors)) errors[ePfx + k] = v;
+    // Errors always name their part, so the user can find the failing key.
+    for (const [k, v] of Object.entries(g.errors)) errors[`${id} › ${k}`] = v;
     if (g.bbox) {
       bbox = bbox
         ? {

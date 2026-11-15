@@ -1,5 +1,5 @@
-;;
-measurement_variable;38 (EU);40 (EU)
+International sizes:;M;L
+European sizes:;38 (EU);40 (EU)
 BrU;88;92
 uBrU;71;75
 TaU;72;76
@@ -16,3 +16,4 @@ HgU;15.8;16.2
 SiH;26.1;26.5
 SrH;79.9;79.5
 FeU;24.5;25
+RueB;16.5;17

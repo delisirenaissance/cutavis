@@ -37,8 +37,27 @@ export interface LineDef {
    *  when it evaluates false the line is omitted entirely. May reference
    *  measurements, local variables, and point(NAME->x|y) cross-references. */
   condition?: string;
-  linePointReferences: [string, string, string, string];
+  /** Same as `condition` (both must be true if both are given). A formula,
+   *  or a JSON boolean / number. Missing = always displayed. */
+  conditionForLineToBeDisplayed?: string | boolean | number;
+  /** [start, c1, c2, end] of a cubic Bézier. Absent for a circle-arc line. */
+  linePointReferences?: [string, string, string, string];
+  /** Alternative to linePointReferences: an arc of a circle. */
+  circleDefinition?: CircleArcDef;
   mergeLineAliasInOtherPartalPattern?: string;
+}
+
+/** A line drawn as a circle arc: centre `centerPoint`, radius = distance to
+ *  `radiusDefPoint`, starting there and running `lengthAlongCircle` cm (arc
+ *  length, formula) in `circleDirection`: "right" / "clockwise" / "cw" or
+ *  "left" / "counterclockwise" / "anticlockwise" / "ccw" (as seen on screen).
+ *  Spellings accepted in the JSON: key names case-insensitive, plus
+ *  `lenghtAlongCircle` and `cicleDirection`. */
+export interface CircleArcDef {
+  centerPoint: string;
+  radiusDefPoint: string;
+  circleDirection: string;
+  lengthAlongCircle: string;
 }
 
 /** A circle around a named point. `radius` is a formula (like point

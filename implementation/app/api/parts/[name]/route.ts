@@ -39,7 +39,9 @@ export async function PUT(
     return NextResponse.json({ error: "Body is not valid JSON" }, { status: 400 });
   }
   const filePath = path.join(PARTS_DIR, `${name}.json`);
-  // Pretty-print so the file stays human-readable
-  await writeFile(filePath, JSON.stringify(JSON.parse(body), null, 2), "utf-8");
+  // Write the text exactly as edited. Re-stringifying would reorder keys:
+  // JS objects put integer-like keys ("1", "10") first, so points like "3b"
+  // would move behind all plain numbers.
+  await writeFile(filePath, body, "utf-8");
   return NextResponse.json({ ok: true });
 }

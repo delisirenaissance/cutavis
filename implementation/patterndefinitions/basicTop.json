@@ -2,7 +2,8 @@
   "version": 1,
   "name": "basic waisted top with darts",
   "parts": [
-    "basicTopWithDarts_Front"
+    "basicTopWithDarts_Front_Passformklasse4",
+    "basicTopWithDarts_Back_Passformklasse4"
   ],
   "edits": []
 }

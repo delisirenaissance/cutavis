@@ -1,0 +1,495 @@
+{
+  "part_specific_user_definable_variables": {
+    "topLength": 22,
+    "AlT_Zg": "1",
+    "RueB_Zg": "0.85",
+    "ArD_Zg": "1.75",
+    "BrB_Zg": "1.4",
+    "TaU_Zg": "5",
+    "HueU_Zg": "5",
+    "neckwidth": 0
+  },
+  "local_variables": {
+    "BrU_incl_Zgs": "BrB + BrB_Zg + ArD + ArD_Zg + RueB + RueB_Zg",
+    "TaU_incl_Zg": "TaU + TaU_Zg",
+    "AbnI": "BrU_incl_Zgs - (TaU_incl_Zg)/2",
+    "AbnIFrontFraction": "(17 + 15 * cupsize)",
+    "AbnIFront": "AbnI*(AbnIFrontFraction/100)",
+    "AbnISideFraction": "15+10*(1-waistform)*(1-0.5*cupsize)",
+    "AbnISide": "AbnI*(AbnISideFraction/100)",
+    "AbnIBackFraction": "100-AbnIFrontFraction-AbnISideFraction",
+    "AbnIBack": "AbnI*(AbnIBackFraction/100)",
+    "secondAbniBack": "(AbnIBack>3.5)*1",
+    "widthOfSecondAbniBack": "secondAbniBack*(3/7)*AbnIBack",
+    "widthOfFirstAbniBack": "AbnIBack-widthOfSecondAbniBack"
+  },
+  "points": {
+    "1": {
+      "x": "0",
+      "y": "0",
+      "pointType": "aux"
+    },
+    "2": {
+      "x": "0",
+      "y": "topLength",
+      "pointType": "aux"
+    },
+    "3": {
+      "x": "0",
+      "y": "AlT + AlT_Zg",
+      "pointType": "aux"
+    },
+    "4": {
+      "x": "0",
+      "y": "RueL",
+      "pointType": "aux"
+    },
+    "6": {
+      "x": "point(1->x) - (2+0.5*waistform)",
+      "y": "point(1->y) + RueL",
+      "pointType": "aux"
+    },
+    "7": {
+      "x&y": "f:intersectLines(L2,L3)",
+      "pointType": "aux"
+    },
+    "8": {
+      "x": "point(6->x)",
+      "y": "point(4->y) + HueT",
+      "pointType": "aux"
+    },
+    "9": {
+      "x": "point(6->x)",
+      "y": "point(4->y) + topLength",
+      "pointType": "aux"
+    },
+    "10": {
+      "x": "point(7->x) - RueB - RueB_Zg",
+      "y": "point(7->y)",
+      "pointType": "aux"
+    },
+    "11": {
+      "x": "point(10->x) - (2/3)*(ArD + ArD_Zg)",
+      "y": "point(10->y)",
+      "pointType": "aux"
+    },
+    "16": {
+      "x": "point(10->x)",
+      "y": "point(1->y)",
+      "pointType": "aux"
+    },
+    "17": {
+      "x": "point(1->x) - HlB",
+      "y": "point(1->y)",
+      "pointType": "aux"
+    },
+    "18": {
+      "x": "point(16->x)",
+      "y": "point(16->y) + 1.5",
+      "pointType": "aux"
+    },
+    "27": {
+      "x": "point(16->x)",
+      "y": "point(6->y)",
+      "pointType": "aux"
+    },
+    "28": {
+      "x": "point(6->x) - (point(6->x) - point(16->x)/2)",
+      "y": "point(6->y)",
+      "pointType": "aux"
+    },
+    "29": {
+      "x": "point(11->x) + (1/2)*AbnISide",
+      "y": "point(28->y) - 1"
+    },
+    "30": {
+      "x": "point(8->x) - (1/4)*(HueU + HueU_Zg)",
+      "y": "point(8->y) - 1"
+    },
+    "31": {
+      "x": "point(30->x)",
+      "y": "point(9->y)"
+    },
+    "32": {
+      "x": "point(30->x)",
+      "y": "point(31->y)"
+    },
+    "33": {
+      "x&y": "f:intersectLines(L13,L11)"
+    },
+    "34": {
+      "x": "point(29b->x) - (point(29b->x) - point(33->x))",
+      "y": "point(33->y)+(point(29b->y)-point(33->y))/2"
+    },
+    "35": {
+      "x": "point(10->x)",
+      "y": "point(27a->y) + 14 - waistform"
+    },
+    "36": {
+      "x": "point(28->x)",
+      "y": "point(10->y)"
+    },
+    "37": {
+      "x": "point(36->x)",
+      "y": "point(28->y) + 16 - waistform"
+    },
+    "38": {
+      "x": "point(42->x) + 1.5",
+      "y": "point(17->y)"
+    },
+    "39": {
+      "x": "point(36->x)",
+      "y": "point(18c->y)"
+    },
+    "40": {
+      "x": "point(18c->x)-1",
+      "y": "point(18c->y)-2"
+    },
+    "41": {
+      "x&y": "f:intersectLines(L9,L27)"
+    },
+    "42": {
+      "x&y": "f:prolongLineToReachLength(L5,neckwidth)"
+    },
+    "3b": {
+      "x": "point(3->x) - 10",
+      "y": "point(3->y)",
+      "pointType": "aux"
+    },
+    "11b": {
+      "x": "point(11->x) + (point(18->x) - point(11->x))/2",
+      "y": "point(11->y)",
+      "pointType": "aux"
+    },
+    "17b": {
+      "x": "point(17->x)",
+      "y": "point(17->y) - 2",
+      "pointType": "aux"
+    },
+    "18b": {
+      "x&y": "f:prolongLineToReachLength(L5, SuB + 1)",
+      "pointType": "aux"
+    },
+    "18c": {
+      "x": "point(18->x) -1",
+      "y": "point(18->y) + (point(10->y)-point(18->y))/2",
+      "pointType": "aux"
+    },
+    "18d": {
+      "x": "point(18->x) -1.5",
+      "y": "point(18c->y) + (point(10->y)-point(18c->y))/2",
+      "pointType": "aux"
+    },
+    "18e": {
+      "x&y": "f:prolongLineToAddLength(L8, 3, SP)",
+      "pointType": "aux"
+    },
+    "27a": {
+      "x": "point(27->x) - (1/2)*widthOfSecondAbniBack",
+      "y": "point(27->y) - 0.5"
+    },
+    "27b": {
+      "x": "point(27->x) + (1/2)*widthOfSecondAbniBack",
+      "y": "point(27->y) - 0.5"
+    },
+    "28a": {
+      "x": "point(28->x) - (1/2)*widthOfFirstAbniBack",
+      "y": "point(28->y)"
+    },
+    "28b": {
+      "x": "point(28->x) + (1/2)*widthOfFirstAbniBack",
+      "y": "point(28->y)"
+    },
+    "29a": {
+      "x": "point(29->x)",
+      "y": "point(29->y) - 1"
+    },
+    "29b": {
+      "x": "point(29->x)",
+      "y": "point(29->y) + 3+(waistform)"
+    },
+    "30a": {
+      "x": "point(31->x)",
+      "y": "point(30->y) - (point(30->y)-point(29b->y))*((1/2)-(1/10)*waistform)"
+    }
+  },
+  "lines": {
+    "L1": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "1",
+        "1",
+        "2",
+        "2"
+      ]
+    },
+    "L2": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "3",
+        "3",
+        "3b",
+        "3b"
+      ]
+    },
+    "L3": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "1",
+        "1",
+        "6",
+        "6"
+      ]
+    },
+    "L4": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "6",
+        "6",
+        "9",
+        "9"
+      ]
+    },
+    "L5": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "17b",
+        "17b",
+        "18",
+        "18"
+      ]
+    },
+    "L6": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "42",
+        "42",
+        "18b",
+        "18b"
+      ]
+    },
+    "L8": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "18c",
+        "18d",
+        "11b",
+        "11"
+      ]
+    },
+    "L9": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "18c",
+        "18e",
+        "18b",
+        "18b"
+      ]
+    },
+    "L10": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "11",
+        "29a",
+        "29",
+        "29"
+      ]
+    },
+    "L11": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "29",
+        "29b",
+        "30a",
+        "30"
+      ]
+    },
+    "L12": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "30",
+        "30",
+        "31",
+        "31"
+      ]
+    },
+    "L13": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "31",
+        "31",
+        "9",
+        "9"
+      ]
+    },
+    "L14": {
+      "lineType": "seam",
+      "conditionForLineToBeDisplayed": "point(33->y)>point(30->y)",
+      "linePointReferences": [
+        "30",
+        "30",
+        "33",
+        "33"
+      ]
+    },
+    "L15": {
+      "lineType": "seam",
+      "conditionForLineToBeDisplayed": "point(33->y)<=point(30->y)",
+      "linePointReferences": [
+        "29",
+        "29b",
+        "34",
+        "33"
+      ]
+    },
+    "L16": {
+      "lineType": "seam",
+      "conditionForLineToBeDisplayed": "point(33->y)>point(30->y)",
+      "linePointReferences": [
+        "29",
+        "29b",
+        "30a",
+        "30"
+      ]
+    },
+    "L17": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "33",
+        "33",
+        "9",
+        "9"
+      ]
+    },
+    "L18": {
+      "lineType": "seam",
+      "conditionForLineToBeDisplayed": "secondAbniBack",
+      "linePointReferences": [
+        "27a",
+        "27a",
+        "35",
+        "35"
+      ]
+    },
+    "L19": {
+      "lineType": "seam",
+      "conditionForLineToBeDisplayed": "secondAbniBack",
+      "linePointReferences": [
+        "27b",
+        "27b",
+        "35",
+        "35"
+      ]
+    },
+    "L20": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "28a",
+        "28a",
+        "37",
+        "37"
+      ]
+    },
+    "L21": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "28b",
+        "28b",
+        "37",
+        "37"
+      ]
+    },
+    "L22": {
+      "lineType": "seam",
+      "conditionForLineToBeDisplayed": "secondAbniBack",
+      "linePointReferences": [
+        "10",
+        "10",
+        "27a",
+        "27a"
+      ]
+    },
+    "L23": {
+      "lineType": "seam",
+      "conditionForLineToBeDisplayed": "secondAbniBack",
+      "linePointReferences": [
+        "10",
+        "10",
+        "27b",
+        "27b"
+      ]
+    },
+    "L24": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "36",
+        "36",
+        "28a",
+        "28a"
+      ]
+    },
+    "L25": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "36",
+        "36",
+        "28b",
+        "28b"
+      ]
+    },
+    "L26": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "17b",
+        "38",
+        "38",
+        "1"
+      ]
+    },
+    "L27": {
+      "lineType": "aux",
+      "linePointReferences": [
+        "39",
+        "39",
+        "40",
+        "40"
+      ]
+    },
+    "L28": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "39",
+        "39",
+        "41",
+        "41"
+      ]
+    },
+    "L29": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "18b",
+        "18e",
+        "41",
+        "41"
+      ]
+    },
+    "L30": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "42",
+        "38",
+        "38",
+        "1"
+      ]
+    },
+    "L31": {
+      "lineType": "seam",
+      "linePointReferences": [
+        "39",
+        "39",
+        "18c",
+        "18c"
+      ]
+    }
+  }
+}

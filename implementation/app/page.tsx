@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { collectVariables, evaluatePart, mergeGeometries, type GeometryResult } from "@/lib/geometry";
 import { samplePart } from "@/lib/samplePart";
+import { checkedPartText, setUserVariableInText } from "@/lib/partText";
 import {
   MEASUREMENT_SETS,
   MEASUREMENT_SET_NAMES,
@@ -125,6 +126,10 @@ export default function Home() {
   // shown — as two tabs of the edit column, one visible at a time.
   const [partEditing, setPartEditing] = useState(false);
   const [partEditTab, setPartEditTab] = useState<"tools" | "json">("tools");
+  // Edit-part mode: one defined line / point of the edited part to highlight
+  // on the plot ("" = none).
+  const [hlLine, setHlLine] = useState("");
+  const [hlPoint, setHlPoint] = useState("");
   // The parts currently loaded onto the plot. The editor shows one at a time
   // (activePartFile); every loaded part is rendered on the shared plot.
   const [loadedParts, setLoadedParts] = useState<LoadedPart[]>([]);
@@ -350,7 +355,7 @@ export default function Home() {
     fetch(`/api/parts/${DEFAULT_PART_FILE}`)
       .then((r) => r.text())
       .then((text) => {
-        const pretty = JSON.stringify(JSON.parse(text), null, 2);
+        const pretty = checkedPartText(text);
         const part: LoadedPart = { file: DEFAULT_PART_FILE, text: pretty, savedText: pretty };
         setLoadedParts([part]);
         setActivePartFile(DEFAULT_PART_FILE);
@@ -413,8 +418,17 @@ export default function Home() {
           ...variableValues,
           ...(part.part_specific_user_definable_variables ?? {}),
         };
-        for (const v of collectVariables(part)) if (!(v in s)) s[v] = 0;
-        base = evaluatePart(part, s);
+        // Safety net: an unexpected definition shape must show up as an
+        // error, not crash the whole page.
+        try {
+          for (const v of collectVariables(part)) if (!(v in s)) s[v] = 0;
+          base = evaluatePart(part, s);
+        } catch (err) {
+          base = {
+            points: {}, paths: {}, lineTypes: {}, localValues: {}, bbox: null,
+            errors: { definition: `Cannot evaluate this part: ${(err as Error).message}` },
+          };
+        }
       }
       return { file: lp.file, part, parseError, base };
     });
@@ -516,6 +530,22 @@ export default function Home() {
   // Save button is enabled only when the active part's editor content differs
   // from the last file load or save (i.e., there are unsaved changes).
   const isDirty = activeLoaded != null && activeLoaded.text !== activeLoaded.savedText;
+
+  // Highlight dropdowns: the lines / points DEFINED in the edited part (from
+  // its current JSON), flagged when they aren't drawn for these measurements
+  // (failed formula or a false `condition`).
+  const highlightOptions = useMemo(() => {
+    const entry = partEntries.find((pe) => pe.file === activePartFile);
+    const def = entry?.part;
+    if (!def) return { lines: [], points: [] };
+    const base = entry.base;
+    return {
+      lines: Object.keys(def.lines ?? {}).map((n) => ({ name: n, shown: !!base?.paths[n] })),
+      points: Object.keys(def.points ?? {}).map((n) => ({ name: n, shown: !!base?.points[n] })),
+    };
+  }, [partEntries, activePartFile]);
+  const hlLineValid = highlightOptions.lines.some((o) => o.name === hlLine) ? hlLine : "";
+  const hlPointValid = highlightOptions.points.some((o) => o.name === hlPoint) ? hlPoint : "";
 
   // The pieces drawn on the plot (edits already applied) — selectable groups.
   const plotParts = plotPieces;
@@ -879,6 +909,8 @@ export default function Home() {
     handleSelectPart(file);
     setPartEditing(true);
     setPartEditTab("tools");
+    setHlLine("");
+    setHlPoint("");
     setSelectedPlotPart(plotPieces.some((p) => p.id === file) ? file : null);
   }
 
@@ -935,6 +967,9 @@ export default function Home() {
       }
       const vars = parsed.part_specific_user_definable_variables;
       if (!vars || !(name in vars)) return lp; // only parts that define it
+      // Patch the number in place so the key order stays as written.
+      const patched = setUserVariableInText(lp.text, name, value);
+      if (patched != null) return { ...lp, text: patched };
       const updated: PartDef = {
         ...parsed,
         part_specific_user_definable_variables: { ...vars, [name]: value },
@@ -963,7 +998,7 @@ export default function Home() {
     try {
       const res = await fetch(`/api/parts/${filename}`);
       const raw = await res.text();
-      text = JSON.stringify(JSON.parse(raw), null, 2);
+      text = checkedPartText(raw);
     } catch (err) {
       text = `// Failed to load ${filename}: ${(err as Error).message}`;
     }
@@ -1588,6 +1623,23 @@ export default function Home() {
     }
   }
 
+  // A measurement is "custom" when it differs from the value of the standard
+  // set chosen in its row (else the selected set).
+  function standardValueOf(name: string): number | undefined {
+    return measurementSets[variableSets[name] ?? selectedSet]?.[name];
+  }
+  function isCustomMeasurement(name: string): boolean {
+    const std = standardValueOf(name);
+    const cur = measurements[name];
+    if (std === undefined || cur === undefined) return false;
+    return Math.abs(cur - std) > 1e-9;
+  }
+  const anyMeasurementCustom = measurementVariableNames.some(isCustomMeasurement);
+
+  function handleMeasurementReset(name: string) {
+    handleVariableSetChange(name, variableSets[name] ?? selectedSet);
+  }
+
   function handleMeasurementChange(name: string, value: number) {
     const newMeasurements = { ...measurements, [name]: value };
     setMeasurements(newMeasurements);
@@ -1740,7 +1792,7 @@ export default function Home() {
         try {
           const res = await fetch(`/api/parts/${file}`, { cache: "no-store" });
           const raw = await res.text();
-          const pretty = JSON.stringify(JSON.parse(raw), null, 2);
+          const pretty = checkedPartText(raw);
           return { file, text: pretty, savedText: pretty };
         } catch (err) {
           const msg = `// Failed to load ${file}: ${(err as Error).message}`;
@@ -1849,7 +1901,8 @@ export default function Home() {
                 )}
                 <h4>Select or reset to a standard measurement set:</h4>
                 <select
-                  className="set-select"
+                  className={`set-select${anyMeasurementCustom ? " customized" : ""}`}
+                  title={anyMeasurementCustom ? "Some measurements are customized" : undefined}
                   value={selectedSet}
                   onChange={(e) => handleSetChange(e.target.value)}
                 >
@@ -1860,12 +1913,16 @@ export default function Home() {
 
                 <h4>or define & save custom measurements:</h4>
                <table>
-                {measurementVariableNames.map((name) => (
-                  <>
+                <tbody>
+                {measurementVariableNames.map((name) => {
+                  const custom = isCustomMeasurement(name);
+                  return (
+                  <Fragment key={name}>
                     <tr>
                       <td className="field">
                         <label htmlFor={`m-${name}`}>{name}</label>
                       </td>
+                      <td>&nbsp;</td>
                       <td>&nbsp;</td>
                     </tr>
                     <tr>
@@ -1873,6 +1930,7 @@ export default function Home() {
                         <input
                           id={`m-${name}`}
                           type="number"
+                          className={custom ? "measurement-custom" : undefined}
                           value={measurements[name] ?? 0}
                           onChange={(e) =>
                             handleMeasurementChange(name, Number(e.target.value))
@@ -1881,7 +1939,7 @@ export default function Home() {
                       </td>
                       <td>
                         <select
-                          className="field-set-select"
+                          className={`field-set-select${custom ? " customized" : ""}`}
                           value={variableSets[name] ?? selectedSet}
                           onChange={(e) =>
                             handleVariableSetChange(name, e.target.value)
@@ -1895,9 +1953,23 @@ export default function Home() {
                           ))}
                         </select>
                       </td>
+                      <td>
+                        {custom && (
+                          <button
+                            type="button"
+                            className="measurement-reset"
+                            onClick={() => handleMeasurementReset(name)}
+                            title={`Reset ${name} to ${standardValueOf(name)} (${sizeLabel(variableSets[name] ?? selectedSet)})`}
+                          >
+                            ↺ Reset
+                          </button>
+                        )}
+                      </td>
                     </tr>
-                  </>
-                ))}
+                  </Fragment>
+                  );
+                })}
+                </tbody>
               </table>
 
                 {tailorMode && (
@@ -2391,6 +2463,42 @@ export default function Home() {
                         {isDirty && <span className="part-dirty" title="Unsaved JSON changes">●</span>}
                       </button>
                     </div>
+                    {/* Highlight one defined line / point of the edited part
+                        on the plot (both tabs). */}
+                    {!editBarCollapsed && (
+                      <div className="edit-highlight">
+                        <label>
+                          <span>Highlight line</span>
+                          <select
+                            value={hlLineValid}
+                            onChange={(e) => setHlLine(e.target.value)}
+                            className={hlLineValid ? "active" : undefined}
+                          >
+                            <option value="">— none —</option>
+                            {highlightOptions.lines.map((o) => (
+                              <option key={o.name} value={o.name}>
+                                {o.name}{o.shown ? "" : " (not drawn)"}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Highlight point</span>
+                          <select
+                            value={hlPointValid}
+                            onChange={(e) => setHlPoint(e.target.value)}
+                            className={hlPointValid ? "active" : undefined}
+                          >
+                            <option value="">— none —</option>
+                            {highlightOptions.points.map((o) => (
+                              <option key={o.name} value={o.name}>
+                                {o.name}{o.shown ? "" : " (not drawn)"}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    )}
                     {partEditTab === "json" ? (
                       !editBarCollapsed && (
                         <div className="edit-json">
@@ -2681,6 +2789,11 @@ export default function Home() {
                   highlightedPart={highlightedPart}
                   editMode={editActive}
                   activePart={activePartFile}
+                  highlight={
+                    editActive && activePartFile && (hlLineValid || hlPointValid)
+                      ? { part: activePartFile, line: hlLineValid || null, point: hlPointValid || null }
+                      : null
+                  }
                   onSelectPart={handlePlotSelect}
                   onMovePart={handleMovePart}
                   cut={

@@ -13,12 +13,25 @@ running (they share `.next` and it corrupts; restart `npm run dev` to recover).
   `PartDef`): `part_specific_user_definable_variables`, `local_variables`,
   `points` (`x`/`y` formulas or `"x&y": "f:intersectLines(...)"`), and `lines`.
   Each line has `linePointReferences: [start, c1, c2, end]` (a straight line is
-  `[A,A,B,B]`), `lineType` = `seam` | `hem` | `aux`, and an optional `condition`
-  that hides the line when false.
+  `[A,A,B,B]`), `lineType` = `seam` | `hem` | `aux`, and optional display
+  gates `condition` and `conditionForLineToBeDisplayed` (same semantics;
+  every one defined must be true, else the line is omitted entirely — no path,
+  not in the outline). Formula (optional `if ` prefix, Excel syntax ok,
+  point refs ok) or a JSON boolean/number. Missing = displayed. An
+  unevaluable one hides the line and reports `line L3 → <key>`
+  (`lineConditions` in geometry.ts).
 - **Geo functions** (`"x&y": "f:name(args)"`, geometry.ts; arguments are split
   at top-level commas only, so an argument may be a formula with a call; a
   bare number as a line argument means `L<n>` (`resolveLineName`)):
-  - `intersectLines(L1, L2)`: the first crossing (straight lines are extended).
+  - `intersectLines(L1, L2)`: the first crossing. If the drawn lines don't
+    cross (`intersectProlonged`), each is prolonged straight along the
+    tangent at its end CLOSER to the other line (control point → end, next
+    control point if coincident, as in prolong). Candidates: ray1 × curve2,
+    curve1 × ray2, ray1 × ray2 (forward); the least total extension wins.
+    With no forward hit, the two tangent lines are intersected as infinite
+    lines (so straight lines behave exactly as before, incl. hits behind an
+    end). Parallel tangents → error. Verified: straight (ahead/behind),
+    curve end/start tangent → line, ray hitting a curve's middle, parallel.
   - `lotPointOnLineAtDistance(L, along, offset)`: a point on the perpendicular.
   - `prolongLineToReachLength(L, d, e = EP)` (old name
     `prolongStraightLineToReachLength` = alias, same behaviour): the end point
@@ -42,9 +55,48 @@ running (they share `.next` and it corrupts; restart `npm run dev` to recover).
   - Variables used ONLY inside x&y arguments are not in `collectVariables`, so
     an undefined one is reported as an error ("undefined variable") instead of
     silently becoming 0.
+- **Part JSON text is kept verbatim** (load, editor, save API, Customize
+  pattern): never `JSON.parse` → `JSON.stringify` it, since JS puts
+  integer-like keys ("1", "10") first and reorders points like "3b".
+  `lib/partText.ts`: `checkedPartText` (validate only) and
+  `setUserVariableInText` (patches one user-variable number in place,
+  verified by re-parsing; null → caller falls back to stringify).
+- **Circle-arc lines** (`"circleDefinition": {centerPoint, radiusDefPoint,
+  circleDirection, lengthAlongCircle}` INSTEAD of linePointReferences; e.g.
+  L2 in basicTopWithDarts_Back_Passformklasse4.json):
+  - Radius = |centre → radiusDefPoint|; the arc starts at radiusDefPoint and
+    runs `lengthAlongCircle` cm of arc (formula, Excel ok). Direction
+    right/clockwise/cw = clockwise ON SCREEN (y down), left/counterclockwise/
+    anticlockwise/ccw the other way. Negative length = other way; longer than
+    the circle → full circle + "(note)".
+  - Keys case-insensitive; typos `lenghtAlongCircle` / `cicleDirection`
+    accepted (`parseCircleArcDef`).
+  - Drawn as cubic segments of ≤ 30° (`arcBeziers`, radial error < 4e-7·r;
+    90° segments were 0.1 mm off at r=35, visible in intersections), keyed
+    `L2`, `L2#2`, … like fragments, so every consumer still sees one cubic
+    per path key. `resolveArc` is shared by drawing and intersectLines.
+  - **intersectLines** works on arcs (`LineShape {segs, circle?}`,
+    `crossLineShapes`): first crossing of the drawn segments. If none
+    (`intersectProlongedShapes`): an arc is prolonged along its WHOLE circle,
+    a Bézier line along its closer-end tangent (closer to the arc/circle);
+    the crossing nearest to both drawn lines (sum of distances) wins. Two
+    Bézier lines keep the old `intersectProlonged`. Verified exact vs. hand
+    results (line×arc, too-short arc, both short, arc×arc, swapped args,
+    miss → error).
+  - Conditions work as for other lines. lot / prolong on an arc line give an
+    error ("does not support the circle arc … yet").
+- **Malformed lines never crash**: `sanitizeLines` (geometry.ts, run before
+  `normalizeFormulas` in evaluatePart/collectVariables) drops lines that
+  aren't objects with exactly 4 `linePointReferences` (numbers → names) or
+  whose display condition has a wrong type, reporting `line L5`. page.tsx
+  `partEntries` also wraps evaluation in try/catch (error key `definition`).
 - **Evaluation** `evaluatePart(part, measurements)` in `lib/geometry.ts` →
   `GeometryResult { points, paths (SVG "M x y C …" keyed by line name),
   lineTypes, localValues, bbox, errors }`. After this, there are no formulas.
+  - Error keys name what failed: `point P5`, `point P5 → x`, `line L3`,
+    `line L3 → condition`, `circle c1`, `local variable w`, `points (cycle)`;
+    messages quote the failing formula / definition. `mergeGeometries`
+    always prefixes them with the part id (`frontPart › point P5`).
 - **Pattern** `patterndefinitions/<name>.json` = `{ version:1, name?, parts:[fileIds],
   edits:[PatternEdit…] }`. API: `/api/patterns`, `/api/patterns/[name]`,
   `/api/pattern-titles` (`{file: name}`), `/api/parts`, `/api/parts/[name]`.
@@ -74,6 +126,11 @@ running (they share `.next` and it corrupts; restart `npm run dev` to recover).
   - The "Size type" dropdown (shown if > 1 type, for everyone, persisted
     `sizeSystem`) only RELABELS the sizes (`sizeLabel(key)`) in the set
     dropdowns, the section hint and the PDF.
+  - Custom values (`isCustomMeasurement`: value ≠ the value of the set
+    chosen in its row): the input is light green (`measurement-custom`), the
+    row's set dropdown light pink, and a "↺ Reset" button appears
+    (`handleMeasurementReset` → back to the row's set value). If any is
+    custom, the main set dropdown is light pink too (`.customized`).
   - Tailor mode: "↻ Re-import measurements from CSV" at the end of the
     measurement list (`handleReimportMeasurements`) resets every measurement
     to the CSV value of the size chosen in its row (custom values are
@@ -499,6 +556,14 @@ leaves it.
       bar, is disabled while a tool is active, and holds "Save part". On
       phones it opens as a sheet above the bottom bar. Outside edit-part mode
       the column only shows a hint.
+    - Above both tabs: "Highlight line" / "Highlight point" dropdowns
+      (`hlLine`/`hlPoint`, "" = none, reset on `startPartEdit`) listing the
+      lines/points DEFINED in the part's current JSON (`highlightOptions`;
+      "(not drawn)" if absent from the base geometry). PatternSvg `highlight`
+      draws the line blue (all fragments: `lineKind` strips `#n`/`~…`) and
+      the point with a blue glow (`#hl-glow` filter) on every piece of the
+      part, ignoring the aux/points toggles. Points dropped by a cut can't
+      show. Hidden on phones.
     - Collapse states are not persisted.
   - There is no tab strip or Pattern tab any more; `activeTab` is gone (old
     stored values are ignored). The non-edit part list with highlighting was

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "name": "basic waisted top with darts",
+  "parts": [
+    "basicTopWithDarts_Front"
+  ],
+  "edits": [
+    {
+      "type": "translate",
+      "part": "basicTopWithDarts_Front",
+      "dx": -3.1903068231291702,
+      "dy": -5.317178038548617
+    },
+    {
+      "type": "translate",
+      "part": "basicTopWithDarts_Front",
+      "dx": -10.102638273242372,
+      "dy": -7.089570718064823
+    },
+    {
+      "type": "translate",
+      "part": "basicTopWithDarts_Front",
+      "dx": 3.8992638949356526,
+      "dy": 5.494417306500238
+    }
+  ]
+}

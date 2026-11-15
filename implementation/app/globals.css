@@ -626,6 +626,19 @@ h2 {
   margin: 20px 0 8px;
 }
 
+.subtitle {
+  font-size: 25px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 20px 0 8px;
+}
+
+.instructions {
+  display: grid;
+  align-items: center;
+}
+
+
 h2:first-child {
   margin-top: 0;
 }
@@ -714,6 +727,31 @@ h2:first-child {
   outline: none;
   border-color: var(--accent);
   color: var(--text);
+}
+
+/* Customized measurements: green value, pink "standard set" dropdowns. */
+input.measurement-custom {
+  background: #dcf5dc;
+}
+
+.set-select.customized,
+.field-set-select.customized {
+  background: #fbe1e8;
+}
+
+.measurement-reset {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.measurement-reset:hover {
+  border-color: var(--accent);
 }
 
 /* ── Body-form dropdowns ─────────────────────────────── */
@@ -1737,6 +1775,39 @@ svg {
   min-height: 300px;
 }
 
+/* Edit-part mode: highlight a defined line / point on the plot. */
+.edit-highlight {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.edit-highlight label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.edit-highlight select {
+  width: 100%;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--text);
+}
+
+.edit-highlight select.active {
+  border-color: #1a73e8;
+  background: #e8f0fe;
+}
+
 /* ── Phones: canvas full width, edit tools as a bottom icon bar ───────── */
 
 @media (max-width: 700px) {
@@ -1904,5 +1975,10 @@ svg {
 
   .edit-json .json-editor {
     min-height: 0;
+  }
+
+  /* No room in the bottom icon bar. */
+  .edit-highlight {
+    display: none;
   }
 }

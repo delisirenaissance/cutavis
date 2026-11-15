@@ -116,6 +116,15 @@ interface Props {
   groups?: Record<string, string[]>;
   /** Pick mode (e.g. choosing a pin host): a click only selects, no dragging. */
   pickOnly?: boolean;
+  /** Edit-part mode: show one defined line (blue) and/or one point (blue
+   *  glow) on every piece derived from `part`. Line fragments keep their
+   *  source name (`L12`, `L12#2`), so all of them are highlighted. */
+  highlight?: { part: string; line: string | null; point: string | null } | null;
+}
+
+/** Source line name of a piece's line key: `L12#2` / `L12~x` → `L12`. */
+function lineKind(name: string): string {
+  return name.replace(/~.*$/, "").replace(/#\d+$/, "");
 }
 
 interface Box {
@@ -175,6 +184,7 @@ export function PatternSvg({
   define = null,
   groups = {},
   pickOnly = false,
+  highlight = null,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -491,6 +501,12 @@ export function PatternSvg({
       height={h * 8}
       role="img"
     >
+      <defs>
+        {/* Soft blue halo for the highlighted point (edit-part mode). */}
+        <filter id="hl-glow" x="-200%" y="-200%" width="500%" height="500%">
+          <feGaussianBlur stdDeviation={unit * 1.4} />
+        </filter>
+      </defs>
       {/* Background: bright yellow signals edit-mode; clicking empty space
           clears the current selection (edit-mode only). */}
       <rect
@@ -685,6 +701,39 @@ export function PatternSvg({
                 </g>
               );
             })}
+
+            {/* Edit-part highlight: chosen line in blue, chosen point with a
+                blue glow. Drawn on top, regardless of the aux/points toggles. */}
+            {highlight && belongsToPart(part.id, highlight.part) && (
+              <g pointerEvents="none">
+                {highlight.line != null &&
+                  Object.entries(g.paths)
+                    .filter(([name]) => lineKind(name) === highlight.line)
+                    .map(([name, d]) => (
+                      <path
+                        key={`hl-${name}`}
+                        d={d} fill="none" stroke="#1a73e8" strokeWidth={unit * 2.2}
+                        strokeLinecap="round" strokeLinejoin="round" opacity={0.9}
+                      />
+                    ))}
+                {highlight.point != null && g.points[highlight.point] && (() => {
+                  const p = g.points[highlight.point];
+                  const { dx, dy, anchor } = labelProps(p, unit);
+                  return (
+                    <g>
+                      <circle cx={p.x} cy={p.y} r={unit * 3.2} fill="#1a73e8" opacity={0.6} filter="url(#hl-glow)" />
+                      <circle cx={p.x} cy={p.y} r={unit * 1.3} fill="#1a73e8" />
+                      <text
+                        x={p.x + dx} y={p.y + dy} fontSize={unit * 4} fill="#1a73e8"
+                        fontFamily="monospace" fontWeight={700} textAnchor={anchor}
+                      >
+                        {highlight.point}
+                      </text>
+                    </g>
+                  );
+                })()}
+              </g>
+            )}
           </g>
         );
       })}

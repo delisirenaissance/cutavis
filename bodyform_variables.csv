@@ -1,10 +1,10 @@
 ;;
 dropdown_variable;dropdown_text;dropdown_value
 waistform;none of the others;1
-waistform;a bit flat buttocks, PLUS a bit stronger hips;0.5
-waistform;flat buttocks, PLUS strong hips;0
-waistform;a bit stronger buttocks, PLUS a bit flater hips;1.5
-waistform;strong buttocks, PLUS flat hips;2
+waistform;a bit: hips more curvy than butt;0.5
+waistform;clearly: hips more curvy than butt;0
+waistform;a bit: butt more pronounced than hip curve;1.5
+waistform;clearly: butt more pronounced than hip curve;2
 cupsize;C;0.8
 cupsize;A;0
 cupsize;B;0.4
